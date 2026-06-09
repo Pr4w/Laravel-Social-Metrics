@@ -42,7 +42,7 @@ return [
         ],
 
         'linkedin' => [
-            'api_version' => '202501',
+            'api_version' => '202605',
             // Optional org URN fallback for organization follower stats. Not needed
             // for personal profiles (they use the token owner) or when the account
             // exposes isPerson()/identifier.

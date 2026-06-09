@@ -34,7 +34,7 @@ class LinkedInDriver extends AbstractDriver
     {
         return [
             'X-Restli-Protocol-Version' => '2.0.0',
-            'LinkedIn-Version' => $context->config['api_version'] ?? '202501',
+            'LinkedIn-Version' => $context->config['api_version'] ?? '202605',
         ];
     }
 
