@@ -173,7 +173,7 @@ config where noted:
 | Platform  | meta keys                                  | notes |
 |-----------|--------------------------------------------|-------|
 | instagram | `ig_user_id`                               | account metrics only; falls back to `drivers.instagram.user_id` |
-| facebook  | `page_id`                                  | account metrics only; falls back to accountId. nativeId is `{pageId}_{postId}` |
+| facebook  | `page_id`, `facebook_content`              | account metrics use page_id (falls back to accountId). Post nativeId is the `{pageId}_{postId}` composite; reels are the bare video id. Routing is by underscore; force it with `facebook_content` = `post`/`reel` |
 | threads   | `threads_user_id`                          | account metrics only; falls back to `drivers.threads.user_id` |
 | youtube   | `channel_id`                               | key-based; falls back to `drivers.youtube.channel_id` |
 | linkedin  | `is_person`, `organization_urn`            | person uses the token owner; org needs the URN |
@@ -264,5 +264,6 @@ yet) but drop in this way.
 - **LinkedIn** branches person vs organization on `meta['is_person']` (inferred from
   the presence of an org URN when absent). Person uses `memberFollowersCount?q=me`;
   organization uses `networkSizes` on `meta['organization_urn']`.
+- **Facebook** routes by id shape: a `{pageId}_{postId}` composite goes to /insights (reactions summed into likes, post_impressions_unique as reach); a bare reel id goes to /video_insights (plays as views, reaction map summed into likes). Comments and shares are not exposed as discrete counts on either endpoint, so they stay null; reels keep plays, replays, watch time and social_actions in raw.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.
