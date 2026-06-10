@@ -4,6 +4,7 @@ namespace Pr4w\SocialMetrics;
 
 use Illuminate\Support\Manager;
 use Pr4w\SocialMetrics\Contracts\MetricsDriver;
+use Pr4w\SocialMetrics\Drivers\FacebookDriver;
 use Pr4w\SocialMetrics\Drivers\InstagramDriver;
 use Pr4w\SocialMetrics\Drivers\LinkedInDriver;
 use Pr4w\SocialMetrics\Drivers\ThreadsDriver;
@@ -25,6 +26,11 @@ class DriverManager extends Manager
     protected function createInstagramDriver(): MetricsDriver
     {
         return new InstagramDriver;
+    }
+
+    protected function createFacebookDriver(): MetricsDriver
+    {
+        return new FacebookDriver;
     }
 
     protected function createThreadsDriver(): MetricsDriver

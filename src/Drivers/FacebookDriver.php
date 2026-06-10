@@ -12,18 +12,19 @@ use Pr4w\SocialMetrics\Enums\MetricScope;
 use Pr4w\SocialMetrics\Support\MetricsContext;
 
 /**
- * Instagram via the Facebook Graph API. Post insights are fetched with the
- * Graph Batch endpoint: one HTTP call returns many media's insights. nativeId
- * is the media id (stored by Laravel-Social-Poster at publish time), so no
- * shortcode resolution is needed.
+ * Facebook Pages via the Graph API. nativeId is the composite "{pageId}_{postId}"
+ * you already store. Needs a Page access token (supply it via the resolver or
+ * inline). Post engagement and insights are pulled in one batched call per post,
+ * mirroring the Instagram driver.
  */
-class InstagramDriver extends AbstractDriver
+class FacebookDriver extends AbstractDriver
 {
-    private const METRICS = 'views,reach,likes,comments,shares,saved,total_interactions';
+    // Counts via summaries, shares inline, impressions/reach via expanded insights.
+    private const FIELDS = 'shares,comments.summary(true).limit(0),likes.summary(true).limit(0),insights.metric(post_impressions,post_impressions_unique)';
 
     public function platform(): string
     {
-        return 'instagram';
+        return 'facebook';
     }
 
     public function fetchPostMetrics(array $nativeIds, MetricsContext $context): DriverResult
@@ -31,11 +32,10 @@ class InstagramDriver extends AbstractDriver
         $result = new DriverResult;
         $version = $context->config['graph_version'] ?? 'v21.0';
 
-        // The Graph Batch endpoint allows up to 50 sub-requests per call.
         foreach (array_chunk($nativeIds, 50) as $chunk) {
             $batch = array_map(fn (string $id) => [
                 'method' => 'GET',
-                'relative_url' => "{$id}/insights?metric=" . self::METRICS,
+                'relative_url' => "{$id}?fields=" . self::FIELDS,
             ], $chunk);
 
             $response = Http::asForm()->post("https://graph.facebook.com/{$version}/", [
@@ -50,9 +50,7 @@ class InstagramDriver extends AbstractDriver
             }
 
             foreach ($response->json() as $index => $sub) {
-                // $chunk is a clean 0-indexed list from array_chunk, so the
-                // positional batch response maps back safely.
-                $id = $chunk[$index];
+                $id = $chunk[$index]; // array_chunk gives a clean 0-indexed list
 
                 if (($sub['code'] ?? 0) !== 200) {
                     $result->addError($this->graphSubError($sub, MetricScope::Post, $id));
@@ -61,18 +59,17 @@ class InstagramDriver extends AbstractDriver
                 }
 
                 $body = json_decode($sub['body'] ?? '[]', true) ?: [];
-                $i = $this->flatten($body['data'] ?? []);
+                $insights = $this->flatten($body['insights']['data'] ?? []);
 
                 $result->addPost(new PostMetrics(
-                    platform: 'instagram',
+                    platform: 'facebook',
                     nativeId: $id,
-                    views: $i['views'] ?? null,
-                    likes: $i['likes'] ?? null,
-                    comments: $i['comments'] ?? null,
-                    shares: $i['shares'] ?? null,
-                    saves: $i['saved'] ?? null,
-                    reach: $i['reach'] ?? null,
-                    raw: $i,
+                    views: $insights['post_impressions'] ?? null,
+                    likes: $this->int($body['likes']['summary'] ?? [], 'total_count'),
+                    comments: $this->int($body['comments']['summary'] ?? [], 'total_count'),
+                    shares: $this->int($body['shares'] ?? [], 'count'),
+                    reach: $insights['post_impressions_unique'] ?? null,
+                    raw: $body,
                     fetchedAt: now()->toImmutable(),
                 ));
             }
@@ -85,17 +82,17 @@ class InstagramDriver extends AbstractDriver
     {
         $result = new DriverResult;
         $version = $context->config['graph_version'] ?? 'v21.0';
-        $igUserId = $context->meta['ig_user_id'] ?? $context->config['user_id'] ?? null;
+        $pageId = $context->meta['page_id'] ?? $context->accountId;
 
-        if (! $igUserId) {
+        if (! $pageId) {
             return $result->addError(new MetricsError(
-                'instagram', MetricScope::Account, null, ErrorReason::Configuration,
-                'Missing IG business user id (account profile ig_user_id or config user_id).',
+                'facebook', MetricScope::Account, null, ErrorReason::Configuration,
+                'Missing Facebook page id (meta page_id or accountId).',
             ));
         }
 
-        $response = Http::get("https://graph.facebook.com/{$version}/{$igUserId}", [
-            'fields' => 'followers_count,follows_count,media_count',
+        $response = Http::get("https://graph.facebook.com/{$version}/{$pageId}", [
+            'fields' => 'followers_count,fan_count',
             'access_token' => $context->accessToken,
         ]);
 
@@ -106,11 +103,10 @@ class InstagramDriver extends AbstractDriver
         $data = $response->json() ?? [];
 
         return $result->setAccount(new AccountMetrics(
-            platform: 'instagram',
-            accountId: (string) $igUserId,
-            followers: $this->int($data, 'followers_count'),
-            following: $this->int($data, 'follows_count'),
-            posts: $this->int($data, 'media_count'),
+            platform: 'facebook',
+            accountId: (string) $pageId,
+            // followers_count is the modern field; fan_count (page likes) kept in raw.
+            followers: $this->int($data, 'followers_count') ?? $this->int($data, 'fan_count'),
             raw: $data,
             fetchedAt: now()->toImmutable(),
         ));

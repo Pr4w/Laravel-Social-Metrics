@@ -173,6 +173,7 @@ config where noted:
 | Platform  | meta keys                                  | notes |
 |-----------|--------------------------------------------|-------|
 | instagram | `ig_user_id`                               | account metrics only; falls back to `drivers.instagram.user_id` |
+| facebook  | `page_id`                                  | account metrics only; falls back to accountId. nativeId is `{pageId}_{postId}` |
 | threads   | `threads_user_id`                          | account metrics only; falls back to `drivers.threads.user_id` |
 | youtube   | `channel_id`                               | key-based; falls back to `drivers.youtube.channel_id` |
 | linkedin  | `is_person`, `organization_urn`            | person uses the token owner; org needs the URN |
@@ -195,6 +196,38 @@ Drivers never throw for partial failures. A dead post becomes a `MetricsError` i
 and the run continues. A resolver returning `null` (or throwing) flags that account
 as `needs_reconnect` and skips it.
 
+Graph platforms (Instagram, Facebook, Threads) are classified from the error body,
+not just the HTTP status: a deleted or inaccessible object (code 100 / subcode 33)
+is `not_found`, a revoked or expired token (190, 102, 463, 467) is `needs_reconnect`,
+and throttling (4, 17, 32, 613) is `rate_limited`. So a deleted post is permanent,
+not a transient `http_error`.
+
+Use `MetricsError::retryable()` instead of hardcoding reasons. It returns true for
+`rate_limited`, `driver_error` (transport blips), and `http_error` on a 5xx or
+unknown status; false for `not_found`, `unsupported`, `needs_reconnect`,
+`configuration`, and any classified 4xx.
+
+```php
+$result = SocialMetrics::fetchPosts([
+    PostRef::make($platform, $foreignId, accountId: $id, accessToken: $token),
+]);
+
+if ($error = $result->errors->first()) {
+    if ($error->retryable()) {
+        $this->release(120);          // throttling, transport, or a 5xx
+        return;
+    }
+
+    // Permanent: deleted post, revoked token, unsupported metric, bad config.
+    Log::warning('Metrics fetch error', [
+        'post' => $foreignId, 'reason' => $error->reason->value, 'message' => $error->message,
+    ]);
+    return;
+}
+
+$metrics = $result->postFor($platform, $foreignId);
+```
+
 ## Custom drivers
 
 ```php
@@ -206,13 +239,14 @@ SocialMetrics::extend('x', fn () => new XMetricsDriver());
 Implement `MetricsDriver`, or extend `AbstractDriver` for the shared HTTP error
 mapping, `int()` null-safe casting, and Graph insight flattening. A driver only ever
 sees a `MetricsContext` (platform, token, accountId, meta, config); it never knows
-where the token came from. Facebook and X were left out of v1 (no proven fetchers
+where the token came from. X was left out of v1 (no proven fetcher
 yet) but drop in this way.
 
 ## Notes / verify before production
 
 - **Account-level endpoints** (IG `followers_count`, Threads `threads_insights`,
-  TikTok `user/info`, YouTube `channels.statistics`, LinkedIn) were written from the
+  TikTok `user/info`, YouTube `channels.statistics`, Facebook page `followers_count`,
+  LinkedIn) were written from the
   documented API shapes, not from battle-tested code like the post-level fetchers.
   Confirm field names and permissions against current docs.
 - **LinkedIn** branches person vs organization on `meta['is_person']` (inferred from

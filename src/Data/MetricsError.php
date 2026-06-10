@@ -21,6 +21,21 @@ final readonly class MetricsError
         public array $raw = [],
     ) {}
 
+    /**
+     * Whether retrying later could plausibly succeed. Throttling and transport
+     * blips are retryable; a deleted post, revoked token, unsupported metric or
+     * misconfiguration are not. An http_error is only retryable on a 5xx (or
+     * unknown status), since a classified 4xx is treated as permanent.
+     */
+    public function retryable(): bool
+    {
+        return match ($this->reason) {
+            ErrorReason::RateLimited, ErrorReason::DriverError => true,
+            ErrorReason::HttpError => $this->httpStatus === null || $this->httpStatus >= 500,
+            default => false,
+        };
+    }
+
     public function toArray(): array
     {
         return [

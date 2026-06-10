@@ -26,6 +26,10 @@ return [
             'user_id' => env('SOCIAL_METRICS_IG_USER_ID'),
         ],
 
+        'facebook' => [
+            'graph_version' => 'v21.0',
+        ],
+
         'threads' => [
             // Fallback Threads user id when not on the account profile (profile.threads_user_id).
             'user_id' => env('SOCIAL_METRICS_THREADS_USER_ID'),
@@ -42,7 +46,7 @@ return [
         ],
 
         'linkedin' => [
-            'api_version' => '202605',
+            'api_version' => '202501',
             // Optional org URN fallback for organization follower stats. Not needed
             // for personal profiles (they use the token owner) or when the account
             // exposes isPerson()/identifier.

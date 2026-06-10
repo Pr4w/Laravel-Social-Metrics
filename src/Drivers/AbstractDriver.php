@@ -54,17 +54,80 @@ abstract class AbstractDriver implements MetricsDriver
 
     protected function httpError(Response $response, MetricScope $scope, ?string $nativeId = null): MetricsError
     {
-        $reason = $response->status() === 429 ? ErrorReason::RateLimited : ErrorReason::HttpError;
+        $error = is_array($response->json()) ? ($response->json('error') ?? null) : null;
+        $reason = $this->reasonFor($response->status(), is_array($error) ? $error : null);
+
+        $message = is_array($error) && ! empty($error['message'])
+            ? "{$this->platform()}: {$error['message']}"
+            : "HTTP {$response->status()} from {$this->platform()}.";
 
         return new MetricsError(
             $this->platform(),
             $scope,
             $nativeId,
             $reason,
-            "HTTP {$response->status()} from {$this->platform()}.",
+            $message,
             $response->status(),
             $this->safeJson($response),
         );
+    }
+
+    /**
+     * Build an error from one failed sub-response of a Graph batch call. The
+     * body is a JSON string; we classify from the embedded Graph error so a
+     * deleted post reads as not_found, not http_error.
+     */
+    protected function graphSubError(array $sub, MetricScope $scope, ?string $nativeId): MetricsError
+    {
+        $status = (int) ($sub['code'] ?? 0);
+        $body = json_decode($sub['body'] ?? '[]', true) ?: [];
+        $error = $body['error'] ?? null;
+
+        $reason = $this->reasonFor($status, is_array($error) ? $error : null);
+
+        $message = is_array($error) && ! empty($error['message'])
+            ? "{$this->platform()}: {$error['message']}"
+            : "Sub-request failed (HTTP {$status}).";
+
+        return new MetricsError($this->platform(), $scope, $nativeId, $reason, $message, $status ?: null, $body);
+    }
+
+    /**
+     * Pick an ErrorReason from an HTTP status and an optional Graph error object.
+     * Distinguishes permanent failures (deleted object, revoked token) from
+     * transient ones (throttling) so callers can retry the right things.
+     */
+    protected function reasonFor(int $status, ?array $graphError): ErrorReason
+    {
+        if (is_array($graphError) && ($mapped = $this->classifyGraphError($graphError)) !== null) {
+            return $mapped;
+        }
+
+        return $status === 429 ? ErrorReason::RateLimited : ErrorReason::HttpError;
+    }
+
+    /** Map known Facebook/Instagram/Threads Graph error codes to a reason. */
+    protected function classifyGraphError(array $error): ?ErrorReason
+    {
+        $code = (int) ($error['code'] ?? 0);
+        $sub = (int) ($error['error_subcode'] ?? 0);
+
+        // Token revoked / expired / session invalid -> needs reconnect.
+        if (in_array($code, [102, 190, 463, 467], true)) {
+            return ErrorReason::NeedsReconnect;
+        }
+
+        // Throttling / rate limiting.
+        if (in_array($code, [4, 17, 32, 613], true) || $sub === 2446079) {
+            return ErrorReason::RateLimited;
+        }
+
+        // Object does not exist, deleted, or unsupported get on the id -> permanent.
+        if ($sub === 33 || in_array($code, [100, 803], true)) {
+            return ErrorReason::NotFound;
+        }
+
+        return null;
     }
 
     /** Build an error from a pool slot that may be a Response or a Throwable. */
