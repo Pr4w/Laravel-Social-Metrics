@@ -4,6 +4,7 @@ namespace Pr4w\SocialMetrics\Drivers;
 
 use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
+use Pr4w\SocialMetrics\Concerns\ClassifiesGraphErrors;
 use Pr4w\SocialMetrics\Concerns\PoolsRequests;
 use Pr4w\SocialMetrics\Data\AccountMetrics;
 use Pr4w\SocialMetrics\Data\DriverResult;
@@ -20,6 +21,7 @@ use Illuminate\Support\Facades\Http;
  */
 class ThreadsDriver extends AbstractDriver
 {
+    use ClassifiesGraphErrors;
     use PoolsRequests;
 
     private const POST_METRICS = 'views,likes,replies,reposts,quotes';

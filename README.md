@@ -190,43 +190,55 @@ Toggle with `social-metrics.events`. Each carries the relevant DTO and your `acc
 
 ## Errors
 
-Drivers never throw for partial failures. A dead post becomes a `MetricsError` in
-`$result->errors` with a typed `ErrorReason` (`not_found`, `http_error`,
-`rate_limited`, `needs_reconnect`, `unsupported`, `configuration`, `driver_error`)
-and the run continues. A resolver returning `null` (or throwing) flags that account
-as `needs_reconnect` and skips it.
+Errors are data, not exceptions. Drivers never throw for partial failures: a dead
+post becomes a `MetricsError` in `$result->errors` and the run continues, so one
+deleted id never sinks the other 49 in a batch. (If you want exception control flow
+in a single-item job, derive it: `if (! $error->retryable()) throw new MyException($error->message);`.)
 
-Graph platforms (Instagram, Facebook, Threads) are classified from the error body,
-not just the HTTP status: a deleted or inaccessible object (code 100 / subcode 33)
-is `not_found`, a revoked or expired token (190, 102, 463, 467) is `needs_reconnect`,
-and throttling (4, 17, 32, 613) is `rate_limited`. So a deleted post is permanent,
-not a transient `http_error`.
+Each `MetricsError` carries a fine-grained `reason` (`ErrorReason`) for logging and a
+coarse `category()` (`ErrorCategory`) for decisions:
 
-Use `MetricsError::retryable()` instead of hardcoding reasons. It returns true for
-`rate_limited`, `driver_error` (transport blips), and `http_error` on a 5xx or
-unknown status; false for `not_found`, `unsupported`, `needs_reconnect`,
-`configuration`, and any classified 4xx.
+| category    | meaning                                            | retryable |
+|-------------|----------------------------------------------------|-----------|
+| `temporary` | throttling, transport blip, server 5xx             | yes       |
+| `permanent` | deleted/unsupported object, bad config             | no        |
+| `reconnect` | token revoked or expired, account needs re-auth    | no        |
+| `unknown`   | the driver could not classify it, review and map   | no        |
+
+Use `retryable()` (true only for `temporary`) rather than hardcoding reasons:
 
 ```php
-$result = SocialMetrics::fetchPosts([
-    PostRef::make($platform, $foreignId, accountId: $id, accessToken: $token),
-]);
-
 if ($error = $result->errors->first()) {
     if ($error->retryable()) {
-        $this->release(120);          // throttling, transport, or a 5xx
+        $this->release(120);
         return;
     }
 
-    // Permanent: deleted post, revoked token, unsupported metric, bad config.
+    if ($error->category() === ErrorCategory::Reconnect) {
+        // mark the account for re-auth
+    }
+
     Log::warning('Metrics fetch error', [
-        'post' => $foreignId, 'reason' => $error->reason->value, 'message' => $error->message,
+        'reason' => $error->reason->value, 'category' => $error->category()->value, 'message' => $error->message,
     ]);
     return;
 }
-
-$metrics = $result->postFor($platform, $foreignId);
 ```
+
+### Classification is per-platform
+
+Each vendor shapes errors differently, so each driver classifies its own. The Meta
+drivers (Instagram, Facebook, Threads) share the `ClassifiesGraphErrors` trait
+(Graph `code`/`error_subcode`); YouTube reads Google `error.errors[].reason`; TikTok
+reads its string `error.code` (it returns HTTP 200 with an error body); LinkedIn uses
+the status-based default. The base `AbstractDriver::classifyError()` is the fallback
+every driver defers to for codes it does not recognize, and it sends anything it
+cannot place to `unknown`.
+
+That `unknown` bucket is deliberate: an error the package has not been taught yet is
+flagged (not silently treated as a generic HTTP error), so you can see it in logs and
+add a mapping. Override `classifyError(int $status, array $body): ErrorReason` in your
+own driver, or in a subclass registered via `extend()`, to teach it new codes.
 
 ## Custom drivers
 

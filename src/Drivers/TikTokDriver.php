@@ -2,6 +2,7 @@
 
 namespace Pr4w\SocialMetrics\Drivers;
 
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Pr4w\SocialMetrics\Data\AccountMetrics;
 use Pr4w\SocialMetrics\Data\DriverResult;
@@ -56,8 +57,8 @@ class TikTokDriver extends AbstractDriver
                 'fields' => 'open_id,follower_count,following_count,likes_count,video_count',
             ]);
 
-        if (! $response->successful()) {
-            return $result->addError($this->httpError($response, MetricScope::Account));
+        if ($error = $this->responseError($response, MetricScope::Account)) {
+            return $result->addError($error);
         }
 
         $user = $response->json('data.user', []);
@@ -88,8 +89,8 @@ class TikTokDriver extends AbstractDriver
                     'cursor' => $cursor,
                 ]);
 
-            if (! $response->successful()) {
-                $result->addError($this->httpError($response, MetricScope::Post));
+            if ($error = $this->responseError($response, MetricScope::Post)) {
+                $result->addError($error);
 
                 break;
             }
@@ -114,5 +115,36 @@ class TikTokDriver extends AbstractDriver
         }
 
         return $videos;
+    }
+
+    /**
+     * TikTok returns HTTP 200 with error.code != "ok" on failures, so a status
+     * check alone misses them. Returns a classified error when the response
+     * failed or the body carries a non-ok code, otherwise null.
+     */
+    private function responseError(Response $response, MetricScope $scope): ?MetricsError
+    {
+        $code = (string) data_get($response->json(), 'error.code', 'ok');
+
+        if (! $response->successful() || ($code !== '' && $code !== 'ok')) {
+            return $this->httpError($response, $scope);
+        }
+
+        return null;
+    }
+
+    /**
+     * Map TikTok's string error.code. Known codes only; anything else falls
+     * through to Unknown so it can be mapped later. Verify against current docs.
+     */
+    protected function classifyError(int $status, array $body): ErrorReason
+    {
+        $code = (string) data_get($body, 'error.code', '');
+
+        return match (true) {
+            in_array($code, ['access_token_invalid', 'access_token_expired', 'scope_not_authorized'], true) => ErrorReason::NeedsReconnect,
+            $code === 'rate_limit_exceeded' => ErrorReason::RateLimited,
+            default => parent::classifyError($status, $body),
+        };
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Pr4w\SocialMetrics\Data;
 
+use Pr4w\SocialMetrics\Enums\ErrorCategory;
 use Pr4w\SocialMetrics\Enums\ErrorReason;
 use Pr4w\SocialMetrics\Enums\MetricScope;
 
@@ -21,19 +22,19 @@ final readonly class MetricsError
         public array $raw = [],
     ) {}
 
+    public function category(): ErrorCategory
+    {
+        return $this->reason->category();
+    }
+
     /**
-     * Whether retrying later could plausibly succeed. Throttling and transport
-     * blips are retryable; a deleted post, revoked token, unsupported metric or
-     * misconfiguration are not. An http_error is only retryable on a 5xx (or
-     * unknown status), since a classified 4xx is treated as permanent.
+     * Whether retrying later could plausibly succeed: true only for the
+     * Temporary category (throttling, transport, 5xx). Permanent, Reconnect and
+     * Unknown all return false.
      */
     public function retryable(): bool
     {
-        return match ($this->reason) {
-            ErrorReason::RateLimited, ErrorReason::DriverError => true,
-            ErrorReason::HttpError => $this->httpStatus === null || $this->httpStatus >= 500,
-            default => false,
-        };
+        return $this->category() === ErrorCategory::Temporary;
     }
 
     public function toArray(): array
@@ -43,6 +44,7 @@ final readonly class MetricsError
             'scope' => $this->scope->value,
             'native_id' => $this->nativeId,
             'reason' => $this->reason->value,
+            'category' => $this->category()->value,
             'message' => $this->message,
             'http_status' => $this->httpStatus,
         ];

@@ -54,80 +54,17 @@ abstract class AbstractDriver implements MetricsDriver
 
     protected function httpError(Response $response, MetricScope $scope, ?string $nativeId = null): MetricsError
     {
-        $error = is_array($response->json()) ? ($response->json('error') ?? null) : null;
-        $reason = $this->reasonFor($response->status(), is_array($error) ? $error : null);
-
-        $message = is_array($error) && ! empty($error['message'])
-            ? "{$this->platform()}: {$error['message']}"
-            : "HTTP {$response->status()} from {$this->platform()}.";
+        $body = $this->safeJson($response);
 
         return new MetricsError(
             $this->platform(),
             $scope,
             $nativeId,
-            $reason,
-            $message,
+            $this->classifyError($response->status(), $body),
+            $this->errorMessage($response->status(), $body),
             $response->status(),
-            $this->safeJson($response),
+            $body,
         );
-    }
-
-    /**
-     * Build an error from one failed sub-response of a Graph batch call. The
-     * body is a JSON string; we classify from the embedded Graph error so a
-     * deleted post reads as not_found, not http_error.
-     */
-    protected function graphSubError(array $sub, MetricScope $scope, ?string $nativeId): MetricsError
-    {
-        $status = (int) ($sub['code'] ?? 0);
-        $body = json_decode($sub['body'] ?? '[]', true) ?: [];
-        $error = $body['error'] ?? null;
-
-        $reason = $this->reasonFor($status, is_array($error) ? $error : null);
-
-        $message = is_array($error) && ! empty($error['message'])
-            ? "{$this->platform()}: {$error['message']}"
-            : "Sub-request failed (HTTP {$status}).";
-
-        return new MetricsError($this->platform(), $scope, $nativeId, $reason, $message, $status ?: null, $body);
-    }
-
-    /**
-     * Pick an ErrorReason from an HTTP status and an optional Graph error object.
-     * Distinguishes permanent failures (deleted object, revoked token) from
-     * transient ones (throttling) so callers can retry the right things.
-     */
-    protected function reasonFor(int $status, ?array $graphError): ErrorReason
-    {
-        if (is_array($graphError) && ($mapped = $this->classifyGraphError($graphError)) !== null) {
-            return $mapped;
-        }
-
-        return $status === 429 ? ErrorReason::RateLimited : ErrorReason::HttpError;
-    }
-
-    /** Map known Facebook/Instagram/Threads Graph error codes to a reason. */
-    protected function classifyGraphError(array $error): ?ErrorReason
-    {
-        $code = (int) ($error['code'] ?? 0);
-        $sub = (int) ($error['error_subcode'] ?? 0);
-
-        // Token revoked / expired / session invalid -> needs reconnect.
-        if (in_array($code, [102, 190, 463, 467], true)) {
-            return ErrorReason::NeedsReconnect;
-        }
-
-        // Throttling / rate limiting.
-        if (in_array($code, [4, 17, 32, 613], true) || $sub === 2446079) {
-            return ErrorReason::RateLimited;
-        }
-
-        // Object does not exist, deleted, or unsupported get on the id -> permanent.
-        if ($sub === 33 || in_array($code, [100, 803], true)) {
-            return ErrorReason::NotFound;
-        }
-
-        return null;
     }
 
     /** Build an error from a pool slot that may be a Response or a Throwable. */
@@ -146,6 +83,37 @@ abstract class AbstractDriver implements MetricsDriver
             ErrorReason::DriverError,
             "{$what}: {$message}",
         );
+    }
+
+    /**
+     * Map an HTTP status and decoded body to a reason. Override per platform,
+     * since every vendor shapes errors differently. The default is status-only
+     * and sends anything it does not recognize to Unknown, so unmapped failures
+     * are flagged for review instead of silently bucketed as something else.
+     */
+    protected function classifyError(int $status, array $body): ErrorReason
+    {
+        return match (true) {
+            $status === 429 => ErrorReason::RateLimited,
+            $status === 401 => ErrorReason::NeedsReconnect,
+            $status === 404 => ErrorReason::NotFound,
+            $status >= 500 => ErrorReason::HttpError,
+            default => ErrorReason::Unknown,
+        };
+    }
+
+    /** Pull the most useful human message across the common vendor error shapes. */
+    protected function errorMessage(int $status, array $body): string
+    {
+        foreach (['error.message', 'message', 'error_description', 'error.errors.0.message'] as $path) {
+            $message = data_get($body, $path);
+
+            if (is_string($message) && $message !== '') {
+                return "{$this->platform()}: {$message}";
+            }
+        }
+
+        return "HTTP {$status} from {$this->platform()}.";
     }
 
     protected function safeJson(Response $response): array

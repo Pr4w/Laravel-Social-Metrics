@@ -116,4 +116,21 @@ class YouTubeDriver extends AbstractDriver
             fetchedAt: now()->toImmutable(),
         ));
     }
+
+    /**
+     * Google API errors carry a reason in error.errors[].reason. Auth problems
+     * are key/config issues here (YouTube is key-based), not account reconnects.
+     * Verify reason strings against current docs.
+     */
+    protected function classifyError(int $status, array $body): ErrorReason
+    {
+        $reason = (string) data_get($body, 'error.errors.0.reason', '');
+
+        return match (true) {
+            in_array($reason, ['quotaExceeded', 'rateLimitExceeded', 'userRateLimitExceeded', 'dailyLimitExceeded'], true) => ErrorReason::RateLimited,
+            in_array($reason, ['videoNotFound', 'channelNotFound', 'playlistNotFound', 'notFound'], true) => ErrorReason::NotFound,
+            in_array($reason, ['keyInvalid', 'keyExpired', 'ipRefererBlocked', 'forbidden'], true) => ErrorReason::Configuration,
+            default => parent::classifyError($status, $body),
+        };
+    }
 }

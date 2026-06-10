@@ -3,6 +3,7 @@
 namespace Pr4w\SocialMetrics\Drivers;
 
 use Illuminate\Support\Facades\Http;
+use Pr4w\SocialMetrics\Concerns\ClassifiesGraphErrors;
 use Pr4w\SocialMetrics\Data\AccountMetrics;
 use Pr4w\SocialMetrics\Data\DriverResult;
 use Pr4w\SocialMetrics\Data\MetricsError;
@@ -19,6 +20,8 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
  */
 class FacebookDriver extends AbstractDriver
 {
+    use ClassifiesGraphErrors;
+
     // Counts via summaries, shares inline, impressions/reach via expanded insights.
     private const FIELDS = 'shares,comments.summary(true).limit(0),likes.summary(true).limit(0),insights.metric(post_impressions,post_impressions_unique)';
 

@@ -2,6 +2,7 @@
 
 namespace Pr4w\SocialMetrics\Drivers;
 
+use Pr4w\SocialMetrics\Concerns\ClassifiesGraphErrors;
 use Illuminate\Support\Facades\Http;
 use Pr4w\SocialMetrics\Data\AccountMetrics;
 use Pr4w\SocialMetrics\Data\DriverResult;
@@ -19,6 +20,8 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
  */
 class InstagramDriver extends AbstractDriver
 {
+    use ClassifiesGraphErrors;
+
     private const METRICS = 'views,reach,likes,comments,shares,saved,total_interactions';
 
     public function platform(): string
