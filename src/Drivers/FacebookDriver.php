@@ -35,7 +35,7 @@ class FacebookDriver extends AbstractDriver
 
     private const POST_METRICS = 'post_impressions_unique,post_reactions_by_type_total';
 
-    private const REEL_METRICS = 'blue_reels_play_count,fb_reels_total_plays,fb_reels_replay_count,post_impressions_unique,post_video_avg_time_watched,post_video_view_time,post_video_followers,post_video_likes_by_reaction_type,post_video_social_actions';
+    private const REEL_METRICS = 'blue_reels_play_count,fb_reels_total_plays,fb_reels_replay_count,post_video_avg_time_watched,post_video_view_time,post_video_followers,post_video_likes_by_reaction_type,post_video_social_actions';
 
     public function platform(): string
     {
