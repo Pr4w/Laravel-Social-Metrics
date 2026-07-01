@@ -105,9 +105,10 @@ class LinkedInDriver extends AbstractDriver
      * (the token's own member, no identifier needed); organizations use
      * networkSizes on the org URN.
      *
-     * Person vs org is read from meta['is_person']; when absent it is inferred
-     * from whether an org URN (meta['organization_urn'] or config) resolves. The
-     * caller supplies these via the AccountRef meta or the resolver.
+     * Read straight from the supplied URN: only urn:li:person is a person, any
+     * other typed entity (organization, school, brand) takes the networkSizes
+     * path. If no typed urn:li: identifier is given, it falls back to
+     * meta['is_person'], then to whether an entity URN resolves.
      */
     public function fetchAccountMetrics(MetricsContext $context): DriverResult
     {
@@ -170,19 +171,61 @@ class LinkedInDriver extends AbstractDriver
 
     private function isPerson(MetricsContext $context): bool
     {
+        // LinkedIn URNs are self-describing. Only urn:li:person is a person;
+        // every other typed entity (organization, school, brand, ...) uses the
+        // networkSizes path, so default to "not a person" once a URN is typed.
+        foreach ($this->urnCandidates($context) as $urn) {
+            if (str_contains($urn, 'urn:li:person')) {
+                return true;
+            }
+
+            if (str_contains($urn, 'urn:li:')) {
+                return false;
+            }
+        }
+
+        // No typed urn:li: identifier: honour an explicit flag, else treat as a
+        // person unless an entity URN is resolvable (e.g. from config).
         if (array_key_exists('is_person', $context->meta)) {
             return (bool) $context->meta['is_person'];
         }
 
-        // Not told: treat as a person unless an org URN is resolvable.
         return $this->orgUrn($context) === null;
     }
 
+    /**
+     * The entity URN for networkSizes: any non-person LinkedIn entity
+     * (organization, school, brand). Prefers an explicit config/meta org URN,
+     * then any typed non-person URN passed as an identifier.
+     */
     private function orgUrn(MetricsContext $context): ?string
     {
         $candidate = $context->meta['organization_urn']
             ?? ($context->config['organization_urn'] ?? null);
 
+        if (! $candidate) {
+            foreach ($this->urnCandidates($context) as $urn) {
+                if (str_contains($urn, 'urn:li:') && ! str_contains($urn, 'urn:li:person')) {
+                    $candidate = $urn;
+                    break;
+                }
+            }
+        }
+
         return $candidate ? (string) $candidate : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function urnCandidates(MetricsContext $context): array
+    {
+        $candidates = [
+            $context->accountId,
+            $context->meta['urn'] ?? null,
+            $context->meta['organization_urn'] ?? null,
+        ];
+
+        return array_values(array_filter($candidates, 'is_string'));
     }
 }
