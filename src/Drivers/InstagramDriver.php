@@ -88,7 +88,7 @@ class InstagramDriver extends AbstractDriver
     {
         $result = new DriverResult;
         $version = $context->config['graph_version'] ?? 'v21.0';
-        $igUserId = $context->meta['ig_user_id'] ?? $context->config['user_id'] ?? null;
+        $igUserId = $context->meta['ig_user_id'] ?? $context->accountId ?? $context->config['user_id'] ?? null;
 
         if (! $igUserId) {
             return $result->addError(new MetricsError(

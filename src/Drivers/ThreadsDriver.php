@@ -72,7 +72,7 @@ class ThreadsDriver extends AbstractDriver
     public function fetchAccountMetrics(MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $userId = $context->meta['threads_user_id'] ?? $context->config['user_id'] ?? null;
+        $userId = $context->meta['threads_user_id'] ?? $context->accountId ?? $context->config['user_id'] ?? null;
 
         if (! $userId) {
             return $result->addError(new MetricsError(

@@ -85,7 +85,7 @@ class YouTubeDriver extends AbstractDriver
     {
         $result = new DriverResult;
         $key = $context->config['api_key'] ?? config('social-metrics.drivers.youtube.api_key');
-        $channelId = $context->meta['channel_id'] ?? $context->config['channel_id'] ?? config('social-metrics.drivers.youtube.channel_id');
+        $channelId = $context->meta['channel_id'] ?? $context->accountId ?? $context->config['channel_id'] ?? config('social-metrics.drivers.youtube.channel_id');
 
         if (! $key || ! $channelId) {
             return $result->addError(new MetricsError(

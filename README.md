@@ -46,7 +46,10 @@ $result = SocialMetrics::fetchPosts([
 
 `nativeId` is the platform id the insights endpoint accepts (media id, video id,
 LinkedIn URN). `accountId` is your own label, used to group refs and echoed back
-in results and events. It is whatever you want: a primary key, a handle, anything.
+in results and events — for **post** metrics it is whatever you want: a primary key,
+a handle, anything. For **account** metrics there is no separate `nativeId`, so
+`accountId` doubles as the platform-native account id (see
+[How identifiers work](#how-identifiers-work-accountid-first-meta-for-the-rest)).
 
 ## Multi-account: provide a resolver
 
@@ -114,13 +117,18 @@ SocialMetrics::resolveAccountsUsing(function (string $platform, string|int|null 
         return null;   // flagged needs_reconnect, run continues
     }
 
-    return new ResolvedAccount($token, meta: [
-        'ig_user_id'       => data_get($account->profile, 'ig_user_id'),
-        'threads_user_id'  => data_get($account->profile, 'threads_user_id'),
-        'channel_id'       => data_get($account->profile, 'channel_id'),
-        'organization_urn' => data_get($account->profile, 'organization_urn'),
-        'is_person'        => method_exists($account, 'isPerson') ? $account->isPerson() : null,
-    ]);
+    // If your accountId already IS the platform-native id (IG user id, channel id,
+    // LinkedIn URN, ...), just return the token — nothing else is needed:
+    return new ResolvedAccount($token);
+
+    // --- or, if accountId is a DB key, alias the real native id per platform ---
+    // (only include the keys for platforms this account actually uses):
+    // return new ResolvedAccount($token, meta: [
+    //     'ig_user_id'       => data_get($account->profile, 'ig_user_id'),
+    //     'threads_user_id'  => data_get($account->profile, 'threads_user_id'),
+    //     'channel_id'       => data_get($account->profile, 'channel_id'),
+    //     'organization_urn' => data_get($account->profile, 'organization_urn'), // urn:li:organization:...
+    // ]);
 });
 ```
 
@@ -147,17 +155,18 @@ inline, or rely on the resolver.
 ```php
 use Pr4w\SocialMetrics\Support\AccountRef;
 
-// Inline tokens
+// Pass the platform-native id as accountId — no meta needed
 $result = SocialMetrics::fetchAccounts([
-    AccountRef::make('instagram', accountId: 1, accessToken: $igToken, meta: ['ig_user_id' => '178...']),
-    AccountRef::make('youtube',   accountId: 'main', meta: ['channel_id' => 'UC...']),  // key-based
-    AccountRef::make('linkedin',  accountId: 'me', accessToken: $liToken, meta: ['is_person' => true]),
+    AccountRef::make('instagram', accountId: '17841400000000001', accessToken: $igToken),
+    AccountRef::make('youtube',   accountId: 'UC...'),                                  // key-based
+    AccountRef::make('linkedin',  accountId: 'urn:li:person:abc123', accessToken: $liToken),
+    AccountRef::make('linkedin',  accountId: 'urn:li:organization:123', accessToken: $liToken),
 ]);
 
-// Or rely on the resolver (omit accessToken/meta)
+// meta only when your accountId is a DB key (alias the real id), or rely on the resolver
 $result = SocialMetrics::fetchAccounts([
-    AccountRef::make('tiktok', accountId: 7),
-    AccountRef::make('linkedin', accountId: 3, meta: ['is_person' => false, 'organization_urn' => 'urn:li:organization:123']),
+    AccountRef::make('tiktok', accountId: 7),                                           // resolver maps 7 -> token
+    AccountRef::make('instagram', accountId: 7, meta: ['ig_user_id' => '17841400000000001']),
 ]);
 
 $result->accounts;                          // Collection<AccountMetrics>
@@ -165,19 +174,41 @@ $a = $result->accountFor('tiktok', $openId);
 $a->followers; $a->following; $a->posts; $a->views;
 ```
 
-### Per-platform meta keys
+### How identifiers work: `accountId` first, `meta` for the rest
 
-A driver reads what it needs from `meta` (resolver or AccountRef), falling back to
-config where noted:
+Every driver is handed the same three things: the platform, one **native id**, and a
+**token**. `accountId` is that native id — you rarely need `meta` at all.
 
-| Platform  | meta keys                                  | notes |
-|-----------|--------------------------------------------|-------|
-| instagram | `ig_user_id`                               | account metrics only; falls back to `drivers.instagram.user_id` |
-| facebook  | `page_id`, `facebook_content`              | account metrics use page_id (falls back to accountId). Post nativeId is the `{pageId}_{postId}` composite; reels are the bare video id. Routing is by underscore; force it with `facebook_content` = `post`/`reel` |
-| threads   | `threads_user_id`                          | account metrics only; falls back to `drivers.threads.user_id` |
-| youtube   | `channel_id`                               | key-based; falls back to `drivers.youtube.channel_id` |
-| linkedin  | `is_person`, `organization_urn`            | person uses the token owner; org needs the URN |
-| tiktok    | (none)                                     | open_id comes back from the API |
+- **Post metrics.** The post's `nativeId` carries the id; `accountId` is only a label
+  (it groups refs and selects the token). It can be anything.
+- **Account metrics.** There is no separate id, so the driver uses `accountId` itself
+  as the platform-native account id (IG user id, YouTube channel id, LinkedIn URN, …).
+  Pass the real native id as `accountId` and you need nothing else.
+
+`meta` is the escape hatch for what does not fit that shape:
+
+1. **A second signal that isn't an id.** Some drivers need more than an id — e.g.
+   facebook `facebook_content` to force `post`/`reel` classification. (LinkedIn's
+   `is_person` used to live here; the URN now implies it — see the LinkedIn note.)
+2. **An id override / alias.** If your `accountId` is a DB key rather than the platform
+   id, supply the real id under the platform's alias key; it wins over `accountId`.
+   This is what lets `accountId: 1` coexist with the real native id.
+
+Resolution order for the account id is `meta['<alias>'] ?? accountId ?? config`, so
+existing `meta` and config setups keep working unchanged.
+
+| Platform  | id alias key         | extra meta         | notes |
+|-----------|----------------------|--------------------|-------|
+| instagram | `ig_user_id`         | —                  | account metrics only; also falls back to `drivers.instagram.user_id` |
+| facebook  | `page_id`            | `facebook_content` | Post nativeId is the `{pageId}_{postId}` composite; reels are the bare video id. Routing is by underscore; force it with `facebook_content` = `post`/`reel` |
+| threads   | `threads_user_id`    | —                  | account metrics only; also falls back to `drivers.threads.user_id` |
+| youtube   | `channel_id`         | —                  | key-based; also falls back to `drivers.youtube.channel_id` |
+| linkedin  | (pass the URN as `accountId`) | `is_person`, `organization_urn` | type is read from the URN; see LinkedIn note below |
+| tiktok    | —                    | —                  | open_id comes back from the API |
+
+**Bottom line:** pass the native id as `accountId` and skip `meta` entirely — reach for
+`meta` only when a driver needs a second signal, or when your `accountId` isn't the
+native id.
 
 ## Events
 
@@ -261,9 +292,15 @@ yet) but drop in this way.
   LinkedIn) were written from the
   documented API shapes, not from battle-tested code like the post-level fetchers.
   Confirm field names and permissions against current docs.
-- **LinkedIn** branches person vs organization on `meta['is_person']` (inferred from
-  the presence of an org URN when absent). Person uses `memberFollowersCount?q=me`;
-  organization uses `networkSizes` on `meta['organization_urn']`.
+- **LinkedIn** reads person vs entity straight from the URN you pass as `accountId`:
+  `urn:li:person:…` uses `memberFollowersCount?q=me` (the token owner); any other typed
+  entity (`urn:li:organization:…`, `urn:li:school:…`, brand) is treated as an
+  organization and uses `networkSizes` on that URN. Only when you pass a non-`urn:li:`
+  identifier does it fall back to `meta['is_person']`, then to whether an org URN
+  resolves (from `meta['organization_urn']` or config). Note: `networkSizes` currently
+  uses the `COMPANY_FOLLOWED_BY_MEMBER` edge, so follower counts for non-company
+  entities (e.g. schools) may need a different edge — classification is correct, but
+  verify that fetch.
 - **Facebook** routes by id shape: a `{pageId}_{postId}` composite goes to /insights (reactions summed into likes, post_impressions_unique as reach); a bare reel id goes to /video_insights (plays as views, reaction map summed into likes). Comments and shares are not exposed as discrete counts on either endpoint, so they stay null; reels keep plays, replays, watch time and social_actions in raw.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.
