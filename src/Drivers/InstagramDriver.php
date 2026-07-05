@@ -88,12 +88,12 @@ class InstagramDriver extends AbstractDriver
     {
         $result = new DriverResult;
         $version = $context->config['graph_version'] ?? 'v21.0';
-        $igUserId = $context->meta['ig_user_id'] ?? $context->accountId ?? $context->config['user_id'] ?? null;
+        $igUserId = $context->meta['ig_user_id'] ?? $context->accountId ?? null;
 
         if (! $igUserId) {
             return $result->addError(new MetricsError(
                 'instagram', MetricScope::Account, null, ErrorReason::Configuration,
-                'Missing IG business user id (account profile ig_user_id or config user_id).',
+                'Missing IG business user id (pass it as accountId or meta ig_user_id).',
             ));
         }
 

@@ -2,6 +2,7 @@
 
 namespace Pr4w\SocialMetrics\Drivers;
 
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Pr4w\SocialMetrics\Data\AccountMetrics;
 use Pr4w\SocialMetrics\Data\DriverResult;
@@ -12,8 +13,13 @@ use Pr4w\SocialMetrics\Enums\MetricScope;
 use Pr4w\SocialMetrics\Support\MetricsContext;
 
 /**
- * YouTube Data API v3. Key-based: public video and channel statistics need only
- * an API key, no OAuth account. The videos endpoint takes up to 50 ids per call.
+ * YouTube Data API v3. Auth is chosen per call by which credential the context
+ * carries — no config flag needed:
+ *   - accessToken present  -> OAuth (Bearer). Account stats use channels.list?mine=true
+ *     (no channel id needed).
+ *   - otherwise            -> API key, sent as ?key=. Supplied per call as
+ *     meta['api_key'] (callers with several keys pass one per ref/account).
+ * The videos endpoint takes up to 50 ids per call.
  */
 class YouTubeDriver extends AbstractDriver
 {
@@ -30,20 +36,18 @@ class YouTubeDriver extends AbstractDriver
     public function fetchPostMetrics(array $nativeIds, MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $key = $context->config['api_key'] ?? config('social-metrics.drivers.youtube.api_key');
 
-        if (! $key) {
+        if (! $context->accessToken && ! $this->apiKey($context)) {
             return $result->addError(new MetricsError(
                 'youtube', MetricScope::Post, null, ErrorReason::Configuration,
-                'Missing social-metrics.drivers.youtube.api_key.',
+                'Missing YouTube credentials: supply an access token, or meta[api_key].',
             ));
         }
 
         foreach (array_chunk($nativeIds, 50) as $chunk) {
-            $response = Http::get('https://www.googleapis.com/youtube/v3/videos', [
+            $response = $this->apiGet($context, 'https://www.googleapis.com/youtube/v3/videos', [
                 'part' => 'statistics',
                 'id' => implode(',', $chunk),
-                'key' => $key,
             ]);
 
             if (! $response->successful()) {
@@ -84,31 +88,53 @@ class YouTubeDriver extends AbstractDriver
     public function fetchAccountMetrics(MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $key = $context->config['api_key'] ?? config('social-metrics.drivers.youtube.api_key');
-        $channelId = $context->meta['channel_id'] ?? $context->accountId ?? $context->config['channel_id'] ?? config('social-metrics.drivers.youtube.channel_id');
+        $token = $context->accessToken;
 
-        if (! $key || ! $channelId) {
-            return $result->addError(new MetricsError(
-                'youtube', MetricScope::Account, null, ErrorReason::Configuration,
-                'Missing youtube.api_key or channel_id (config or account profile channel_id).',
-            ));
+        if ($token) {
+            // OAuth path: the token identifies the channel via mine=true, so no
+            // channel id or API key is needed.
+            $response = Http::withToken($token)
+                ->get('https://www.googleapis.com/youtube/v3/channels', [
+                    'part' => 'statistics',
+                    'mine' => 'true',
+                ]);
+        } else {
+            // Key-based path: public statistics for an explicit channel id.
+            $key = $this->apiKey($context);
+            $channelId = $context->meta['channel_id'] ?? $context->accountId ?? null;
+
+            if (! $key || ! $channelId) {
+                return $result->addError(new MetricsError(
+                    'youtube', MetricScope::Account, null, ErrorReason::Configuration,
+                    'Missing YouTube credentials: supply an access token (OAuth), or meta[api_key] plus a channel id (accountId or meta channel_id).',
+                ));
+            }
+
+            $response = Http::get('https://www.googleapis.com/youtube/v3/channels', [
+                'part' => 'statistics',
+                'id' => $channelId,
+                'key' => $key,
+            ]);
         }
-
-        $response = Http::get('https://www.googleapis.com/youtube/v3/channels', [
-            'part' => 'statistics',
-            'id' => $channelId,
-            'key' => $key,
-        ]);
 
         if (! $response->successful()) {
             return $result->addError($this->httpError($response, MetricScope::Account));
+        }
+
+        if (! $response->json('items.0')) {
+            return $result->addError(new MetricsError(
+                'youtube', MetricScope::Account, null, ErrorReason::NotFound,
+                $token
+                    ? 'The authenticated Google account has no YouTube channel.'
+                    : 'No channel returned for the given id.',
+            ));
         }
 
         $stats = $response->json('items.0.statistics', []);
 
         return $result->setAccount(new AccountMetrics(
             platform: 'youtube',
-            accountId: (string) $channelId,
+            accountId: (string) ($context->accountId ?? $response->json('items.0.id') ?? 'me'),
             followers: $this->int($stats, 'subscriberCount'),
             posts: $this->int($stats, 'videoCount'),
             views: $this->int($stats, 'viewCount'),
@@ -117,10 +143,31 @@ class YouTubeDriver extends AbstractDriver
         ));
     }
 
+    /** The API key for the key-based path, supplied per call as meta['api_key']. */
+    private function apiKey(MetricsContext $context): ?string
+    {
+        return $context->meta['api_key'] ?? null;
+    }
+
     /**
-     * Google API errors carry a reason in error.errors[].reason. Auth problems
-     * are key/config issues here (YouTube is key-based), not account reconnects.
-     * Verify reason strings against current docs.
+     * Issue a Data API GET, choosing auth by which credential is present: an
+     * OAuth token goes as a Bearer header; otherwise the API key is appended as
+     * ?key=. Callers pass only the resource query (part, id, ...).
+     */
+    private function apiGet(MetricsContext $context, string $url, array $query): Response
+    {
+        if ($token = $context->accessToken) {
+            return Http::withToken($token)->get($url, $query);
+        }
+
+        return Http::get($url, $query + ['key' => $this->apiKey($context)]);
+    }
+
+    /**
+     * Google API errors carry a reason in error.errors[].reason. Key-specific
+     * failures (keyInvalid/keyExpired) stay Configuration; a bare 401 on the
+     * OAuth path is not matched here and falls through to the parent, which maps
+     * it to NeedsReconnect. Verify reason strings against current docs.
      */
     protected function classifyError(int $status, array $body): ErrorReason
     {

@@ -7,7 +7,8 @@ namespace Pr4w\SocialMetrics\Support;
  * came from. The caller (or a resolver) supplies the access token and any
  * per-account data; this package never resolves credentials itself.
  *
- * accessToken is null for key-based drivers (e.g. YouTube). accountId is the
+ * accessToken may be null for tokenless drivers (e.g. YouTube's key-based path;
+ * it still accepts a token to unlock OAuth). accountId is the
  * caller's own label, echoed back into results and events. meta carries
  * per-account values a driver needs, e.g. ig_user_id, threads_user_id,
  * channel_id, organization_urn, is_person.

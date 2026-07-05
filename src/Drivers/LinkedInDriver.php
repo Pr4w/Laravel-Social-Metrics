@@ -146,7 +146,7 @@ class LinkedInDriver extends AbstractDriver
         if (! $orgUrn) {
             return $result->addError(new MetricsError(
                 'linkedin', MetricScope::Account, null, ErrorReason::Configuration,
-                'Organization account has no URN. Provide meta[organization_urn] (via AccountRef or resolver) or drivers.linkedin.organization_urn.',
+                'Organization account has no URN. Pass the urn:li:organization:… as accountId, or meta[organization_urn] (via AccountRef or resolver).',
             ));
         }
 
@@ -185,7 +185,7 @@ class LinkedInDriver extends AbstractDriver
         }
 
         // No typed urn:li: identifier: honour an explicit flag, else treat as a
-        // person unless an entity URN is resolvable (e.g. from config).
+        // person unless an org URN was supplied via meta.
         if (array_key_exists('is_person', $context->meta)) {
             return (bool) $context->meta['is_person'];
         }
@@ -200,8 +200,7 @@ class LinkedInDriver extends AbstractDriver
      */
     private function orgUrn(MetricsContext $context): ?string
     {
-        $candidate = $context->meta['organization_urn']
-            ?? ($context->config['organization_urn'] ?? null);
+        $candidate = $context->meta['organization_urn'] ?? null;
 
         if (! $candidate) {
             foreach ($this->urnCandidates($context) as $urn) {

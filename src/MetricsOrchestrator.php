@@ -164,17 +164,21 @@ class MetricsOrchestrator
     ): ?MetricsContext {
         $config = $this->driverConfig($platform);
 
-        // Key-based drivers (e.g. YouTube): no token. A resolver may still
-        // provide meta (channel_id, etc.) but is never required.
+        // Tokenless-capable drivers (e.g. YouTube): a token is never required,
+        // but one may still be supplied to unlock an OAuth path (YouTube's
+        // channels.list?mine=true). A resolver may also provide meta (channel_id,
+        // etc.). Inline values win; the resolver fills the gap when nothing inline.
         if (! $driver->requiresAccount()) {
             $meta = $inlineMeta;
+            $token = $inlineToken;
 
             if ($inlineToken === null && $inlineMeta === [] && $resolver) {
                 $resolved = $this->tryResolve($resolver, $platform, $accountId);
                 $meta = $resolved?->meta ?? [];
+                $token = $resolved?->accessToken;
             }
 
-            return new MetricsContext($platform, $inlineToken, $accountId, $meta, $config);
+            return new MetricsContext($platform, $token, $accountId, $meta, $config);
         }
 
         if ($inlineToken !== null) {
@@ -252,15 +256,10 @@ class MetricsOrchestrator
     private function resolveDriver(string $platform): ?MetricsDriver
     {
         try {
-            return $this->drivers->driver($this->driverNameFor($platform));
+            return $this->drivers->driver($platform);
         } catch (\InvalidArgumentException $e) {
             return null;
         }
-    }
-
-    private function driverNameFor(string $provider): string
-    {
-        return config("social-metrics.driver_map.{$provider}", $provider);
     }
 
     private function driverConfig(string $platform): array

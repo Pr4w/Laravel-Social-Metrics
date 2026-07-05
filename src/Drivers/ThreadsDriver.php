@@ -72,12 +72,12 @@ class ThreadsDriver extends AbstractDriver
     public function fetchAccountMetrics(MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $userId = $context->meta['threads_user_id'] ?? $context->accountId ?? $context->config['user_id'] ?? null;
+        $userId = $context->meta['threads_user_id'] ?? $context->accountId ?? null;
 
         if (! $userId) {
             return $result->addError(new MetricsError(
                 'threads', MetricScope::Account, null, ErrorReason::Configuration,
-                'Missing Threads user id (account profile threads_user_id or config user_id).',
+                'Missing Threads user id (pass it as accountId or meta threads_user_id).',
             ));
         }
 

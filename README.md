@@ -13,12 +13,16 @@ composer require pr4w/laravel-social-metrics
 php artisan vendor:publish --tag=social-metrics-config
 ```
 
-Only YouTube needs config credentials (it is key-based, no account):
+The published config holds only app-level settings — API versions, a couple of tuning
+knobs, and the events switch. It carries **no credentials and no account identifiers**:
+tokens, the YouTube API key, and account ids are all passed per call (see
+[How identifiers work](#how-identifiers-work-accountid-first-meta-for-the-rest)). There
+are no required env vars.
 
-```dotenv
-SOCIAL_METRICS_YOUTUBE_KEY=AIza...
-SOCIAL_METRICS_YOUTUBE_CHANNEL_ID=UC...
-```
+YouTube specifically takes either an OAuth `accessToken` (which resolves the channel
+via `channels.list?mine=true` — no key or channel id needed) or an API key passed as
+`meta['api_key']`. See the YouTube note under
+[Notes / verify before production](#notes--verify-before-production).
 
 ## Quick start (single account, you hold the token)
 
@@ -51,41 +55,52 @@ a handle, anything. For **account** metrics there is no separate `nativeId`, so
 `accountId` doubles as the platform-native account id (see
 [How identifiers work](#how-identifiers-work-accountid-first-meta-for-the-rest)).
 
-## Multi-account: provide a resolver
+## Providing tokens: inline or a resolver
 
-When you have several accounts, do not put a token on every ref. Give the package
-a resolver that turns one of your account labels into a token (and any per-account
-`meta` a driver needs). The resolver is the single auth seam, and where you decide
-the token's origin.
+Every ref needs an access token (except YouTube's key-based path). You supply it
+one of two ways — pick one, they don't mix per ref:
+
+- **Inline** — set `accessToken` on the ref. Fine for one or a handful of accounts.
+- **Resolver** — register a single callback that turns a `(platform, accountId)` pair
+  into a token. Best when you loop over many accounts: refs stay lean and auth lives
+  in one place.
+
+The resolver contract is small: given the platform and *your* `accountId`, return a
+token. That's it.
 
 ```php
 use Pr4w\SocialMetrics\Support\ResolvedAccount;
 
-// Set once, e.g. in a service provider:
+// Register once, e.g. in a service provider:
 SocialMetrics::resolveAccountsUsing(function (string $platform, string|int|null $accountId) {
     $token = MyTokenStore::tokenFor($platform, $accountId);   // your own store
 
-    if (! $token) {
-        return null;          // run continues; this account is flagged needs_reconnect
-    }
-
-    return new ResolvedAccount($token, meta: [
-        'ig_user_id' => MyTokenStore::igUserId($accountId),   // only what that platform needs
-    ]);
+    return $token
+        ? new ResolvedAccount($token)
+        : null;   // no token -> this account is flagged needs_reconnect; the run continues
 });
 
-// Then refs stay lean:
+// Refs now carry no token — just platform, native id, and your accountId:
 $result = SocialMetrics::fetchPosts([
     PostRef::make('instagram', '178414...', accountId: 1),
-    PostRef::make('instagram', '178402...', accountId: 7),   // different account, own token
-    PostRef::make('youtube', 'dQw4w9WgXcQ'),                 // key-based, no token needed
+    PostRef::make('instagram', '178402...', accountId: 7),   // different account, its own token
+    PostRef::make('youtube', 'dQw4w9WgXcQ', meta: ['api_key' => $ytKey]),  // key-based, no token
     PostRef::make('linkedin', 'urn:li:share:7123...', accountId: 3),
 ]);
 ```
 
-You can also pass a resolver per call: `SocialMetrics::fetchPosts($refs, $resolver)`.
+`accountId` is whatever key your store uses (a DB id, a handle) — the resolver receives
+it and looks up the matching token. Returning `null` (or a `ResolvedAccount` with no
+token) marks just that account `needs_reconnect` and moves on; one dead token never
+sinks the batch.
 
-In practice you map your stored publications straight into refs:
+Two extras, both optional:
+- Pass a resolver for a single call instead of globally: `SocialMetrics::fetchPosts($refs, $resolver)`.
+- If your `accountId` is a DB key rather than the platform-native id, return the native
+  id in the resolver's `meta` (see [How identifiers work](#how-identifiers-work-accountid-first-meta-for-the-rest)).
+  Otherwise `meta` is unnecessary.
+
+In practice you map stored publications straight into refs:
 
 ```php
 $refs = $publications->map(fn ($p) => PostRef::make($p->platform, $p->native_id, $p->account_id));
@@ -158,7 +173,8 @@ use Pr4w\SocialMetrics\Support\AccountRef;
 // Pass the platform-native id as accountId — no meta needed
 $result = SocialMetrics::fetchAccounts([
     AccountRef::make('instagram', accountId: '17841400000000001', accessToken: $igToken),
-    AccountRef::make('youtube',   accountId: 'UC...'),                                  // key-based
+    AccountRef::make('youtube',   accountId: 'UC...', meta: ['api_key' => $key]),       // key path
+    AccountRef::make('youtube',   accessToken: $ytToken),                               // OAuth: mine=true, no id
     AccountRef::make('linkedin',  accountId: 'urn:li:person:abc123', accessToken: $liToken),
     AccountRef::make('linkedin',  accountId: 'urn:li:organization:123', accessToken: $liToken),
 ]);
@@ -194,15 +210,15 @@ Every driver is handed the same three things: the platform, one **native id**, a
    id, supply the real id under the platform's alias key; it wins over `accountId`.
    This is what lets `accountId: 1` coexist with the real native id.
 
-Resolution order for the account id is `meta['<alias>'] ?? accountId ?? config`, so
-existing `meta` and config setups keep working unchanged.
+Resolution order for the account id is `meta['<alias>'] ?? accountId`. Account
+identifiers are never read from the package config — you supply them per call.
 
 | Platform  | id alias key         | extra meta         | notes |
 |-----------|----------------------|--------------------|-------|
-| instagram | `ig_user_id`         | —                  | account metrics only; also falls back to `drivers.instagram.user_id` |
+| instagram | `ig_user_id`         | —                  | account metrics only |
 | facebook  | `page_id`            | `facebook_content` | Post nativeId is the `{pageId}_{postId}` composite; reels are the bare video id. Routing is by underscore; force it with `facebook_content` = `post`/`reel` |
-| threads   | `threads_user_id`    | —                  | account metrics only; also falls back to `drivers.threads.user_id` |
-| youtube   | `channel_id`         | —                  | key-based; also falls back to `drivers.youtube.channel_id` |
+| threads   | `threads_user_id`    | —                  | account metrics only |
+| youtube   | `channel_id`         | `api_key`          | auth is chosen by field: `accessToken` → OAuth (`mine=true`, no id needed); otherwise `meta['api_key']` + a `channel_id` |
 | linkedin  | (pass the URN as `accountId`) | `is_person`, `organization_urn` | type is read from the URN; see LinkedIn note below |
 | tiktok    | —                    | —                  | open_id comes back from the API |
 
@@ -297,10 +313,20 @@ yet) but drop in this way.
   entity (`urn:li:organization:…`, `urn:li:school:…`, brand) is treated as an
   organization and uses `networkSizes` on that URN. Only when you pass a non-`urn:li:`
   identifier does it fall back to `meta['is_person']`, then to whether an org URN
-  resolves (from `meta['organization_urn']` or config). Note: `networkSizes` currently
+  resolves (from `meta['organization_urn']`). Note: `networkSizes` currently
   uses the `COMPANY_FOLLOWED_BY_MEMBER` edge, so follower counts for non-company
   entities (e.g. schools) may need a different edge — classification is correct, but
   verify that fetch.
+- **YouTube** chooses auth per call by which credential the ref/resolver carries —
+  no config flag. An `accessToken` uses OAuth (Bearer): account stats call
+  `channels.list?part=statistics&mine=true` (channel from the token, no id or key
+  needed). Otherwise the API key is used (sent as `?key=`), supplied per call as
+  `meta['api_key']` — so callers holding several keys pass one per ref/account — plus
+  an explicit `channel_id`. Account stats are
+  lifetime totals only (`subscriberCount`, `viewCount`, `videoCount`); periodized
+  analytics (watch time, subs gained/lost, per-day views) live in the separate
+  **YouTube Analytics API** (`youtubeAnalytics.reports.query`, OAuth-only), not wired
+  up yet.
 - **Facebook** routes by id shape: a `{pageId}_{postId}` composite goes to /insights (reactions summed into likes, post_impressions_unique as reach); a bare reel id goes to /video_insights (plays as views, reaction map summed into likes). Comments and shares are not exposed as discrete counts on either endpoint, so they stay null; reels keep plays, replays, watch time and social_actions in raw.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.
