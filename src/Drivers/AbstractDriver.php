@@ -34,10 +34,16 @@ abstract class AbstractDriver implements MetricsDriver
         ));
     }
 
+    /** Cast a scalar to int, preserving null (unknown vs zero). */
+    protected function toInt(mixed $value): ?int
+    {
+        return $value === null ? null : (int) $value;
+    }
+
     /** Cast a present, non-null array value to int; null otherwise (preserves unknown vs zero). */
     protected function int(array $data, string $key): ?int
     {
-        return array_key_exists($key, $data) && $data[$key] !== null ? (int) $data[$key] : null;
+        return $this->toInt($data[$key] ?? null);
     }
 
     /** Collapse Graph-style [{name, values:[{value}]}] insight rows into name => value. */

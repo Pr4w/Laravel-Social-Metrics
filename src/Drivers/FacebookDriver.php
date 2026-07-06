@@ -4,6 +4,7 @@ namespace Pr4w\SocialMetrics\Drivers;
 
 use Illuminate\Support\Facades\Http;
 use Pr4w\SocialMetrics\Concerns\ClassifiesGraphErrors;
+use Pr4w\SocialMetrics\Concerns\FetchesGraphInsights;
 use Pr4w\SocialMetrics\Data\AccountMetrics;
 use Pr4w\SocialMetrics\Data\DriverResult;
 use Pr4w\SocialMetrics\Data\MetricsError;
@@ -32,6 +33,7 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
 class FacebookDriver extends AbstractDriver
 {
     use ClassifiesGraphErrors;
+    use FetchesGraphInsights;
 
     private const POST_METRICS = 'post_impressions_unique,post_reactions_by_type_total';
 
@@ -45,10 +47,11 @@ class FacebookDriver extends AbstractDriver
     public function fetchPostMetrics(array $nativeIds, MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $version = $context->config['graph_version'] ?? 'v21.0';
 
-        // Resolve content type per id. A forced post without an underscore is malformed.
-        $targets = [];
+        // Resolve content type per id (a forced post without an underscore is
+        // malformed), building the batch requests and remembering each type.
+        $requests = [];
+        $types = [];
 
         foreach ($nativeIds as $id) {
             $type = $this->contentType($id, $context);
@@ -62,45 +65,15 @@ class FacebookDriver extends AbstractDriver
                 continue;
             }
 
-            $targets[] = ['id' => $id, 'type' => $type];
+            $types[$id] = $type;
+            $requests[$id] = $type === 'reel'
+                ? "{$id}/video_insights?metric=" . self::REEL_METRICS
+                : "{$id}/insights?metric=" . self::POST_METRICS;
         }
 
-        foreach (array_chunk($targets, 50) as $chunk) {
-            $batch = array_map(fn (array $t) => [
-                'method' => 'GET',
-                'relative_url' => $t['type'] === 'reel'
-                    ? "{$t['id']}/video_insights?metric=" . self::REEL_METRICS
-                    : "{$t['id']}/insights?metric=" . self::POST_METRICS,
-            ], $chunk);
-
-            $response = Http::asForm()->post("https://graph.facebook.com/{$version}/", [
-                'access_token' => $context->accessToken,
-                'batch' => json_encode($batch),
-            ]);
-
-            if (! $response->successful()) {
-                $result->addError($this->httpError($response, MetricScope::Post));
-
-                continue;
-            }
-
-            foreach ($response->json() as $index => $sub) {
-                $target = $chunk[$index]; // array_chunk gives a clean 0-indexed list
-
-                if (($sub['code'] ?? 0) !== 200) {
-                    $result->addError($this->graphSubError($sub, MetricScope::Post, $target['id']));
-
-                    continue;
-                }
-
-                $body = json_decode($sub['body'] ?? '[]', true) ?: [];
-                $insights = $this->flatten($body['data'] ?? []);
-
-                $result->addPost($target['type'] === 'reel'
-                    ? $this->mapReel($target['id'], $insights)
-                    : $this->mapPost($target['id'], $insights));
-            }
-        }
+        $this->graphBatch($this->graphVersion($context), $context->accessToken, $requests, fn (string $id, array $insights) => $types[$id] === 'reel'
+            ? $this->mapReel($id, $insights)
+            : $this->mapPost($id, $insights), $result);
 
         return $result;
     }
@@ -155,15 +128,10 @@ class FacebookDriver extends AbstractDriver
         return $this->toInt($value);
     }
 
-    private function toInt(mixed $value): ?int
-    {
-        return $value === null ? null : (int) $value;
-    }
-
     public function fetchAccountMetrics(MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $version = $context->config['graph_version'] ?? 'v21.0';
+        $version = $this->graphVersion($context);
         $pageId = $context->meta['page_id'] ?? $context->accountId;
 
         if (! $pageId) {

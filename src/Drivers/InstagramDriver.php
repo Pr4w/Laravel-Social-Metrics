@@ -3,6 +3,7 @@
 namespace Pr4w\SocialMetrics\Drivers;
 
 use Pr4w\SocialMetrics\Concerns\ClassifiesGraphErrors;
+use Pr4w\SocialMetrics\Concerns\FetchesGraphInsights;
 use Illuminate\Support\Facades\Http;
 use Pr4w\SocialMetrics\Data\AccountMetrics;
 use Pr4w\SocialMetrics\Data\DriverResult;
@@ -21,6 +22,7 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
 class InstagramDriver extends AbstractDriver
 {
     use ClassifiesGraphErrors;
+    use FetchesGraphInsights;
 
     private const METRICS = 'views,reach,likes,comments,shares,saved,total_interactions';
 
@@ -32,54 +34,25 @@ class InstagramDriver extends AbstractDriver
     public function fetchPostMetrics(array $nativeIds, MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $version = $context->config['graph_version'] ?? 'v21.0';
 
-        // The Graph Batch endpoint allows up to 50 sub-requests per call.
-        foreach (array_chunk($nativeIds, 50) as $chunk) {
-            $batch = array_map(fn (string $id) => [
-                'method' => 'GET',
-                'relative_url' => "{$id}/insights?metric=" . self::METRICS,
-            ], $chunk);
+        $requests = [];
 
-            $response = Http::asForm()->post("https://graph.facebook.com/{$version}/", [
-                'access_token' => $context->accessToken,
-                'batch' => json_encode($batch),
-            ]);
-
-            if (! $response->successful()) {
-                $result->addError($this->httpError($response, MetricScope::Post));
-
-                continue;
-            }
-
-            foreach ($response->json() as $index => $sub) {
-                // $chunk is a clean 0-indexed list from array_chunk, so the
-                // positional batch response maps back safely.
-                $id = $chunk[$index];
-
-                if (($sub['code'] ?? 0) !== 200) {
-                    $result->addError($this->graphSubError($sub, MetricScope::Post, $id));
-
-                    continue;
-                }
-
-                $body = json_decode($sub['body'] ?? '[]', true) ?: [];
-                $i = $this->flatten($body['data'] ?? []);
-
-                $result->addPost(new PostMetrics(
-                    platform: 'instagram',
-                    nativeId: $id,
-                    views: $i['views'] ?? null,
-                    likes: $i['likes'] ?? null,
-                    comments: $i['comments'] ?? null,
-                    shares: $i['shares'] ?? null,
-                    saves: $i['saved'] ?? null,
-                    reach: $i['reach'] ?? null,
-                    raw: $i,
-                    fetchedAt: now()->toImmutable(),
-                ));
-            }
+        foreach ($nativeIds as $id) {
+            $requests[$id] = "{$id}/insights?metric=" . self::METRICS;
         }
+
+        $this->graphBatch($this->graphVersion($context), $context->accessToken, $requests, fn (string $id, array $i) => new PostMetrics(
+            platform: 'instagram',
+            nativeId: $id,
+            views: $i['views'] ?? null,
+            likes: $i['likes'] ?? null,
+            comments: $i['comments'] ?? null,
+            shares: $i['shares'] ?? null,
+            saves: $i['saved'] ?? null,
+            reach: $i['reach'] ?? null,
+            raw: $i,
+            fetchedAt: now()->toImmutable(),
+        ), $result);
 
         return $result;
     }
@@ -87,7 +60,7 @@ class InstagramDriver extends AbstractDriver
     public function fetchAccountMetrics(MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
-        $version = $context->config['graph_version'] ?? 'v21.0';
+        $version = $this->graphVersion($context);
         $igUserId = $context->meta['ig_user_id'] ?? $context->accountId ?? null;
 
         if (! $igUserId) {
