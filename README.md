@@ -248,9 +248,13 @@ coarse `category()` (`ErrorCategory`) for decisions:
 | category    | meaning                                            | retryable |
 |-------------|----------------------------------------------------|-----------|
 | `temporary` | throttling, transport blip, server 5xx             | yes       |
-| `permanent` | deleted/unsupported object, bad config             | no        |
+| `permanent` | deleted/unsupported object, bad config, missing scope | no     |
 | `reconnect` | token revoked or expired, account needs re-auth    | no        |
 | `unknown`   | the driver could not classify it, review and map   | no        |
+
+The `permission` reason (category `permanent`) means the token is valid but was never
+granted a scope the endpoint needs, e.g. LinkedIn's 403 `ACCESS_DENIED`. Reconnecting
+with the same scopes will not fix it, which is why it is not `reconnect`.
 
 Use `retryable()` (true only for `temporary`) rather than hardcoding reasons:
 
@@ -277,8 +281,8 @@ if ($error = $result->errors->first()) {
 Each vendor shapes errors differently, so each driver classifies its own. The Meta
 drivers (Instagram, Facebook, Threads) share the `ClassifiesGraphErrors` trait
 (Graph `code`/`error_subcode`); YouTube reads Google `error.errors[].reason`; TikTok
-reads its string `error.code` (it returns HTTP 200 with an error body); LinkedIn uses
-the status-based default. The base `AbstractDriver::classifyError()` is the fallback
+reads its string `error.code` (it returns HTTP 200 with an error body); LinkedIn maps a
+403 (`ACCESS_DENIED`) to `permission` and otherwise uses the status-based default. The base `AbstractDriver::classifyError()` is the fallback
 every driver defers to for codes it does not recognize, and it sends anything it
 cannot place to `unknown`.
 
@@ -301,6 +305,16 @@ sees a `MetricsContext` (platform, token, accountId, meta, config); it never kno
 where the token came from. X was left out of v1 (no proven fetcher
 yet) but drop in this way.
 
+## Testing
+
+```bash
+composer install
+composer test
+```
+
+The suite uses Pest and Orchestra Testbench, with `Http::fake()` standing in for the
+platform APIs.
+
 ## Notes / verify before production
 
 - **Account-level endpoints** (IG `followers_count`, Threads `threads_insights`,
@@ -308,7 +322,26 @@ yet) but drop in this way.
   LinkedIn) were written from the
   documented API shapes, not from battle-tested code like the post-level fetchers.
   Confirm field names and permissions against current docs.
-- **LinkedIn** reads person vs entity straight from the URN you pass as `accountId`:
+- **LinkedIn post metrics** depend on the scopes the token carries:
+
+  | metric | source | scope |
+  |--------|--------|-------|
+  | views (impressions), reach, shares | `memberCreatorPostAnalytics` (`IMPRESSION`, `MEMBERS_REACHED`, `RESHARE`) | `r_member_postAnalytics` |
+  | likes, comments | `socialActions` | `r_member_social` (restricted) or `r_organization_social` |
+  | likes, comments (fallback) | `memberCreatorPostAnalytics` (`REACTION`, `COMMENT`) | `r_member_postAnalytics` |
+
+  A token for a page, or a personal token that also manages pages, carries
+  `r_organization_social`, so `socialActions` answers and no fallback call is made. A
+  token for a personal profile alone gets a 403 from `socialActions`; the driver then
+  asks the analytics endpoint for `REACTION` and `COMMENT`, for those posts only. That
+  post comes back complete with no error. `REACTION` counts every reaction type, like
+  `likesSummary.totalLikes`, but the analytics can lag a little behind. The refused
+  call is kept in `raw['socialActions_error']` and the fallback counts in
+  `raw['analytics']`. An error is reported only if neither source yields likes or
+  comments (a retryable failure is preferred, so a throttled fallback still retries).
+  Whether `memberCreatorPostAnalytics` returns impressions for page posts has not been
+  verified.
+- **LinkedIn account metrics** read person vs entity straight from the URN you pass as `accountId`:
   `urn:li:person:…` uses `memberFollowersCount?q=me` (the token owner); any other typed
   entity (`urn:li:organization:…`, `urn:li:school:…`, brand) is treated as an
   organization and uses `networkSizes` on that URN. Only when you pass a non-`urn:li:`

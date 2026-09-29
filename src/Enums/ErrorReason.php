@@ -9,6 +9,10 @@ namespace Pr4w\SocialMetrics\Enums;
  * Unknown means the driver could not map the platform's error. These are not
  * retried (we will not blindly hammer something we do not understand) but are
  * surfaced so a mapping can be added later.
+ *
+ * Permission means the token is valid but lacks a scope the endpoint needs
+ * (e.g. LinkedIn 403 ACCESS_DENIED). Reconnecting with the same scopes will not
+ * fix it, so it is Permanent rather than Reconnect.
  */
 enum ErrorReason: string
 {
@@ -19,6 +23,7 @@ enum ErrorReason: string
     case RateLimited = 'rate_limited';
     case DriverError = 'driver_error';
     case Configuration = 'configuration';
+    case Permission = 'permission';
     case Unknown = 'unknown';
 
     public function category(): ErrorCategory
@@ -26,7 +31,7 @@ enum ErrorReason: string
         return match ($this) {
             self::RateLimited, self::HttpError, self::DriverError => ErrorCategory::Temporary,
             self::NeedsReconnect => ErrorCategory::Reconnect,
-            self::NotFound, self::Unsupported, self::Configuration => ErrorCategory::Permanent,
+            self::NotFound, self::Unsupported, self::Configuration, self::Permission => ErrorCategory::Permanent,
             self::Unknown => ErrorCategory::Unknown,
         };
     }

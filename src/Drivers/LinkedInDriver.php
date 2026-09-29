@@ -15,15 +15,27 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
 
 /**
  * LinkedIn creator posts. nativeId is the full URN (urn:li:share:... or
- * urn:li:ugcPost:...). Likes + comments come from socialActions; impressions,
- * reach and reshares from memberCreatorPostAnalytics (one query per metric).
+ * urn:li:ugcPost:...). Where each metric comes from:
  *
- * All requests across all posts are fired in a single pool, keyed by
- * "{index}|{what}", then reassembled.
+ *   - views (impressions), reach, shares: memberCreatorPostAnalytics, one query
+ *     per queryType (IMPRESSION, MEMBERS_REACHED, RESHARE).
+ *   - likes, comments: socialActions. It needs r_member_social (restricted) or
+ *     r_organization_social, so it works for page posts and org-scoped tokens.
+ *   - likes, comments fallback: a token for a personal profile only carries
+ *     r_member_postAnalytics and gets a 403 from socialActions. For those posts
+ *     only, a second pool asks memberCreatorPostAnalytics for REACTION (likes,
+ *     all reaction types, like totalLikes) and COMMENT. The analytics can lag
+ *     socialActions slightly. The socialActions failure is kept in
+ *     raw['socialActions_error'], and an error is only reported when neither
+ *     source yields likes or comments.
+ *
+ * Requests are fired in a pool keyed by "{index}|{what}", then reassembled.
  */
 class LinkedInDriver extends AbstractDriver
 {
     private const ANALYTICS = ['IMPRESSION', 'MEMBERS_REACHED', 'RESHARE'];
+
+    private const FALLBACK = ['REACTION', 'COMMENT'];
 
     public function platform(): string
     {
@@ -46,40 +58,66 @@ class LinkedInDriver extends AbstractDriver
 
         $responses = Http::pool(function (Pool $pool) use ($nativeIds, $token, $headers) {
             foreach ($nativeIds as $i => $urn) {
-                $encoded = urlencode($urn);
-                $type = str_contains($urn, 'ugcPost') ? 'ugc' : 'share';
-
                 $pool->as("{$i}|social")->withToken($token)->withHeaders($headers)
-                    ->get("https://api.linkedin.com/rest/socialActions/{$encoded}");
+                    ->get('https://api.linkedin.com/rest/socialActions/' . urlencode($urn));
 
                 foreach (self::ANALYTICS as $metric) {
                     $pool->as("{$i}|{$metric}")->withToken($token)->withHeaders($headers)
-                        ->get("https://api.linkedin.com/rest/memberCreatorPostAnalytics?q=entity&entity=({$type}:{$encoded})&queryType={$metric}");
+                        ->get($this->analyticsUrl($urn, $metric));
+                }
+            }
+        });
+
+        // Only posts whose socialActions call failed get the analytics fallback,
+        // so page posts and org-scoped tokens spend no extra analytics quota.
+        $failed = array_filter(
+            $nativeIds,
+            fn (string $urn, int|string $i) => ! $this->ok($responses["{$i}|social"] ?? null),
+            ARRAY_FILTER_USE_BOTH,
+        );
+
+        $fallback = $failed === [] ? [] : Http::pool(function (Pool $pool) use ($failed, $token, $headers) {
+            foreach ($failed as $i => $urn) {
+                foreach (self::FALLBACK as $metric) {
+                    $pool->as("{$i}|{$metric}")->withToken($token)->withHeaders($headers)
+                        ->get($this->analyticsUrl($urn, $metric));
                 }
             }
         });
 
         foreach ($nativeIds as $i => $urn) {
             $raw = [];
-            $likes = $comments = null;
-
-            $social = $responses["{$i}|social"] ?? null;
-
-            if ($social instanceof Response && $social->successful()) {
-                $likes = $social->json('likesSummary.totalLikes');
-                $comments = $social->json('commentsSummary.aggregatedTotalComments');
-                $raw['socialActions'] = $social->json();
-            } else {
-                $result->addError($this->slotError($social, MetricScope::Post, $urn, 'socialActions'));
-            }
-
             $analytics = [];
 
             foreach (self::ANALYTICS as $metric) {
-                $r = $responses["{$i}|{$metric}"] ?? null;
-                $analytics[$metric] = ($r instanceof Response && $r->successful())
-                    ? ($r->json('elements.0.count') ?? 0)
-                    : null;
+                $analytics[$metric] = $this->analyticsCount($responses["{$i}|{$metric}"] ?? null);
+            }
+
+            $social = $responses["{$i}|social"] ?? null;
+
+            if ($this->ok($social)) {
+                $likes = $this->toInt($social->json('likesSummary.totalLikes'));
+                $comments = $this->toInt($social->json('commentsSummary.aggregatedTotalComments'));
+                $raw['socialActions'] = $social->json();
+            } else {
+                $socialError = $this->slotError($social, MetricScope::Post, $urn, 'socialActions');
+                $raw['socialActions_error'] = [
+                    'status' => $socialError->httpStatus,
+                    'reason' => $socialError->reason->value,
+                    'message' => $socialError->message,
+                ];
+
+                $reaction = $fallback["{$i}|REACTION"] ?? null;
+                $likes = $analytics['REACTION'] = $this->analyticsCount($reaction);
+                $comments = $analytics['COMMENT'] = $this->analyticsCount($fallback["{$i}|COMMENT"] ?? null);
+
+                if ($likes === null && $comments === null) {
+                    // Both sources failed. Prefer a retryable failure so the
+                    // caller retries; otherwise report the primary source.
+                    $fallbackError = $this->slotError($reaction, MetricScope::Post, $urn, 'memberCreatorPostAnalytics');
+
+                    $result->addError(! $socialError->retryable() && $fallbackError->retryable() ? $fallbackError : $socialError);
+                }
             }
 
             $raw['analytics'] = $analytics;
@@ -98,6 +136,40 @@ class LinkedInDriver extends AbstractDriver
         }
 
         return $result;
+    }
+
+    private function analyticsUrl(string $urn, string $queryType): string
+    {
+        $type = str_contains($urn, 'ugcPost') ? 'ugc' : 'share';
+        $encoded = urlencode($urn);
+
+        return "https://api.linkedin.com/rest/memberCreatorPostAnalytics?q=entity&entity=({$type}:{$encoded})&queryType={$queryType}";
+    }
+
+    /** elements.0.count of an analytics slot: 0 when it has no rows, null when the call failed. */
+    private function analyticsCount(mixed $slot): ?int
+    {
+        return $this->ok($slot) ? $this->toInt($slot->json('elements.0.count') ?? 0) : null;
+    }
+
+    private function ok(mixed $slot): bool
+    {
+        return $slot instanceof Response && $slot->successful();
+    }
+
+    /**
+     * A missing scope comes back as 403 {"status":403,"code":"ACCESS_DENIED"}.
+     * The token is valid, it was just never granted that permission, so this is
+     * Permission (never retried) rather than NeedsReconnect. 401, 404, 429 and
+     * 5xx keep the status-based default.
+     */
+    protected function classifyError(int $status, array $body): ErrorReason
+    {
+        if ($status === 403 || ($body['code'] ?? null) === 'ACCESS_DENIED') {
+            return ErrorReason::Permission;
+        }
+
+        return parent::classifyError($status, $body);
     }
 
     /**

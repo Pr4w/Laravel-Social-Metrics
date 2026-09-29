@@ -6,7 +6,7 @@ namespace Pr4w\SocialMetrics\Enums;
  * Coarse error bucket for deciding what to do next.
  *
  * - Temporary: throttling, transport blips, server 5xx. Retry with backoff.
- * - Permanent: deleted/unsupported object, bad config. Never retry.
+ * - Permanent: deleted/unsupported object, bad config, missing scope. Never retry.
  * - Reconnect: token revoked or expired. The account needs re-auth.
  * - Unknown: the driver could not classify it. Do not retry; review and map it.
  */
