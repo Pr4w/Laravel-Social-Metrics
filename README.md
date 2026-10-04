@@ -322,25 +322,28 @@ platform APIs.
   LinkedIn) were written from the
   documented API shapes, not from battle-tested code like the post-level fetchers.
   Confirm field names and permissions against current docs.
-- **LinkedIn post metrics** depend on the scopes the token carries:
+- **LinkedIn post metrics** come from two sources:
 
   | metric | source | scope |
   |--------|--------|-------|
-  | views (impressions), reach, shares | `memberCreatorPostAnalytics` (`IMPRESSION`, `MEMBERS_REACHED`, `RESHARE`) | `r_member_postAnalytics` |
-  | likes, comments | `socialActions` | `r_member_social` (restricted) or `r_organization_social` |
-  | likes, comments (fallback) | `memberCreatorPostAnalytics` (`REACTION`, `COMMENT`) | `r_member_postAnalytics` |
+  | views (impressions), reach, shares, likes, comments, saves | `memberCreatorPostAnalytics` (`IMPRESSION`, `MEMBERS_REACHED`, `RESHARE`, `REACTION`, `COMMENT`, `POST_SAVE`) | `r_member_postAnalytics` |
+  | likes, comments (fallback) | `socialActions` | `r_organization_social` (on a member's post it needs `r_member_social`, which regular apps don't get) |
 
-  A token for a page, or a personal token that also manages pages, carries
-  `r_organization_social`, so `socialActions` answers and no fallback call is made. A
-  token for a personal profile alone gets a 403 from `socialActions`; the driver then
-  asks the analytics endpoint for `REACTION` and `COMMENT`, for those posts only. That
-  post comes back complete with no error. `REACTION` counts every reaction type, like
-  `likesSummary.totalLikes`, but the analytics can lag a little behind. The refused
-  call is kept in `raw['socialActions_error']` and the fallback counts in
-  `raw['analytics']`. An error is reported only if neither source yields likes or
-  comments (a retryable failure is preferred, so a throttled fallback still retries).
-  Whether `memberCreatorPostAnalytics` returns impressions for page posts has not been
-  verified.
+  The analytics endpoint is the primary source, but it only covers the authenticated
+  member's own posts. For a personal post every metric comes from it and `socialActions`
+  is never called. When `REACTION` or `COMMENT` fails, which in practice means a company
+  page post, the driver asks `socialActions` for likes and comments, for those posts
+  only. A page post therefore comes back with likes and comments and null views, reach,
+  shares and saves (page impressions would need `organizationalEntityShareStatistics`,
+  not wired up yet). `REACTION` counts every reaction type, like
+  `likesSummary.totalLikes`. `POST_SAVE` needs `LinkedIn-Version` 202604 or later; on
+  an older `drivers.linkedin.api_version`, saves stay null.
+
+  A post is returned whenever any source produced a metric; a failed source leaves its
+  fields null, with the counts in `raw['analytics']` and, when called,
+  `raw['socialActions']` or `raw['socialActions_error']`. An error (and no
+  `PostMetrics`) is reported only when nothing came back for that URN, preferring a
+  retryable failure so a throttled call still retries.
 - **LinkedIn account metrics** read person vs entity straight from the URN you pass as `accountId`:
   `urn:li:person:…` uses `memberFollowersCount?q=me` (the token owner); any other typed
   entity (`urn:li:organization:…`, `urn:li:school:…`, brand) is treated as an

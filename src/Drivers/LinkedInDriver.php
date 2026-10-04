@@ -14,28 +14,36 @@ use Pr4w\SocialMetrics\Enums\MetricScope;
 use Pr4w\SocialMetrics\Support\MetricsContext;
 
 /**
- * LinkedIn creator posts. nativeId is the full URN (urn:li:share:... or
- * urn:li:ugcPost:...). Where each metric comes from:
+ * LinkedIn posts. nativeId is the full URN (urn:li:share:... or
+ * urn:li:ugcPost:...). Metrics come from two sources:
  *
- *   - views (impressions), reach, shares: memberCreatorPostAnalytics, one query
- *     per queryType (IMPRESSION, MEMBERS_REACHED, RESHARE).
- *   - likes, comments: socialActions. It needs r_member_social (restricted) or
- *     r_organization_social, so it works for page posts and org-scoped tokens.
- *   - likes, comments fallback: a token for a personal profile only carries
- *     r_member_postAnalytics and gets a 403 from socialActions. For those posts
- *     only, a second pool asks memberCreatorPostAnalytics for REACTION (likes,
- *     all reaction types, like totalLikes) and COMMENT. The analytics can lag
- *     socialActions slightly. The socialActions failure is kept in
- *     raw['socialActions_error'], and an error is only reported when neither
- *     source yields likes or comments.
+ *   - memberCreatorPostAnalytics, the primary source, one query per queryType:
+ *     IMPRESSION (views), MEMBERS_REACHED (reach), RESHARE (shares), REACTION
+ *     (likes, all reaction types), COMMENT (comments), POST_SAVE (saves, needs
+ *     LinkedIn-Version 202604 or later). Needs r_member_postAnalytics, and only
+ *     covers the authenticated member's own posts.
+ *   - socialActions, the fallback for likes and comments, asked only for posts
+ *     whose REACTION or COMMENT query failed: in practice company page posts.
+ *     Needs r_organization_social there (on a member's post it needs the closed
+ *     r_member_social, so it is never asked first).
  *
- * Requests are fired in a pool keyed by "{index}|{what}", then reassembled.
+ * A post is returned whenever any source produced a metric; failed sources are
+ * left null and recorded in raw. An error is reported, with no PostMetrics, only
+ * when nothing came back for that URN.
+ *
+ * Requests are fired in pools keyed by "{index}|{what}", then reassembled.
  */
 class LinkedInDriver extends AbstractDriver
 {
-    private const ANALYTICS = ['IMPRESSION', 'MEMBERS_REACHED', 'RESHARE'];
-
-    private const FALLBACK = ['REACTION', 'COMMENT'];
+    /** memberCreatorPostAnalytics queryType => PostMetrics field. */
+    private const ANALYTICS = [
+        'IMPRESSION' => 'views',
+        'MEMBERS_REACHED' => 'reach',
+        'RESHARE' => 'shares',
+        'REACTION' => 'likes',
+        'COMMENT' => 'comments',
+        'POST_SAVE' => 'saves',
+    ];
 
     public function platform(): string
     {
@@ -56,80 +64,80 @@ class LinkedInDriver extends AbstractDriver
         $token = $context->accessToken;
         $headers = $this->headers($context);
 
-        $responses = Http::pool(function (Pool $pool) use ($nativeIds, $token, $headers) {
+        $analytics = Http::pool(function (Pool $pool) use ($nativeIds, $token, $headers) {
             foreach ($nativeIds as $i => $urn) {
-                $pool->as("{$i}|social")->withToken($token)->withHeaders($headers)
-                    ->get('https://api.linkedin.com/rest/socialActions/' . urlencode($urn));
-
-                foreach (self::ANALYTICS as $metric) {
-                    $pool->as("{$i}|{$metric}")->withToken($token)->withHeaders($headers)
-                        ->get($this->analyticsUrl($urn, $metric));
+                foreach (array_keys(self::ANALYTICS) as $queryType) {
+                    $pool->as("{$i}|{$queryType}")->withToken($token)->withHeaders($headers)
+                        ->get($this->analyticsUrl($urn, $queryType));
                 }
             }
         });
 
-        // Only posts whose socialActions call failed get the analytics fallback,
-        // so page posts and org-scoped tokens spend no extra analytics quota.
-        $failed = array_filter(
+        // socialActions only carries likes and comments, so it is only worth
+        // asking when one of those two analytics queries failed.
+        $fallback = array_filter(
             $nativeIds,
-            fn (string $urn, int|string $i) => ! $this->ok($responses["{$i}|social"] ?? null),
+            fn (string $urn, int|string $i) => ! $this->ok($analytics["{$i}|REACTION"] ?? null)
+                || ! $this->ok($analytics["{$i}|COMMENT"] ?? null),
             ARRAY_FILTER_USE_BOTH,
         );
 
-        $fallback = $failed === [] ? [] : Http::pool(function (Pool $pool) use ($failed, $token, $headers) {
-            foreach ($failed as $i => $urn) {
-                foreach (self::FALLBACK as $metric) {
-                    $pool->as("{$i}|{$metric}")->withToken($token)->withHeaders($headers)
-                        ->get($this->analyticsUrl($urn, $metric));
-                }
+        $social = $fallback === [] ? [] : Http::pool(function (Pool $pool) use ($fallback, $token, $headers) {
+            foreach ($fallback as $i => $urn) {
+                $pool->as("{$i}|social")->withToken($token)->withHeaders($headers)
+                    ->get('https://api.linkedin.com/rest/socialActions/' . urlencode($urn));
             }
         });
 
         foreach ($nativeIds as $i => $urn) {
-            $raw = [];
-            $analytics = [];
+            $metrics = [];
+            $raw = ['analytics' => []];
+            $errors = [];
 
-            foreach (self::ANALYTICS as $metric) {
-                $analytics[$metric] = $this->analyticsCount($responses["{$i}|{$metric}"] ?? null);
-            }
+            foreach (self::ANALYTICS as $queryType => $field) {
+                $slot = $analytics["{$i}|{$queryType}"] ?? null;
+                $metrics[$field] = $raw['analytics'][$queryType] = $this->analyticsCount($slot);
 
-            $social = $responses["{$i}|social"] ?? null;
-
-            if ($this->ok($social)) {
-                $likes = $this->toInt($social->json('likesSummary.totalLikes'));
-                $comments = $this->toInt($social->json('commentsSummary.aggregatedTotalComments'));
-                $raw['socialActions'] = $social->json();
-            } else {
-                $socialError = $this->slotError($social, MetricScope::Post, $urn, 'socialActions');
-                $raw['socialActions_error'] = [
-                    'status' => $socialError->httpStatus,
-                    'reason' => $socialError->reason->value,
-                    'message' => $socialError->message,
-                ];
-
-                $reaction = $fallback["{$i}|REACTION"] ?? null;
-                $likes = $analytics['REACTION'] = $this->analyticsCount($reaction);
-                $comments = $analytics['COMMENT'] = $this->analyticsCount($fallback["{$i}|COMMENT"] ?? null);
-
-                if ($likes === null && $comments === null) {
-                    // Both sources failed. Prefer a retryable failure so the
-                    // caller retries; otherwise report the primary source.
-                    $fallbackError = $this->slotError($reaction, MetricScope::Post, $urn, 'memberCreatorPostAnalytics');
-
-                    $result->addError(! $socialError->retryable() && $fallbackError->retryable() ? $fallbackError : $socialError);
+                if ($metrics[$field] === null) {
+                    $errors[] = $this->slotError($slot, MetricScope::Post, $urn, 'memberCreatorPostAnalytics');
                 }
             }
 
-            $raw['analytics'] = $analytics;
+            if (array_key_exists($i, $fallback)) {
+                $slot = $social["{$i}|social"] ?? null;
+
+                if ($this->ok($slot)) {
+                    $metrics['likes'] ??= $this->toInt($slot->json('likesSummary.totalLikes'));
+                    $metrics['comments'] ??= $this->toInt($slot->json('commentsSummary.aggregatedTotalComments'));
+                    $raw['socialActions'] = $slot->json();
+                } else {
+                    // Listed first so it is the one reported when nothing is retryable.
+                    array_unshift($errors, $socialError = $this->slotError($slot, MetricScope::Post, $urn, 'socialActions'));
+                    $raw['socialActions_error'] = [
+                        'status' => $socialError->httpStatus,
+                        'reason' => $socialError->reason->value,
+                        'message' => $socialError->message,
+                    ];
+                }
+            }
+
+            if (array_filter($metrics, fn (?int $value) => $value !== null) === []) {
+                // No source produced anything. Prefer a retryable failure so the
+                // caller retries; otherwise report socialActions, the last source.
+                $result->addError(collect($errors)->first(fn (MetricsError $e) => $e->retryable()) ?? $errors[0]);
+
+                continue;
+            }
 
             $result->addPost(new PostMetrics(
                 platform: 'linkedin',
                 nativeId: $urn,
-                views: $analytics['IMPRESSION'] ?? null,   // impressions used as views
-                likes: $likes,
-                comments: $comments,
-                shares: $analytics['RESHARE'] ?? null,
-                reach: $analytics['MEMBERS_REACHED'] ?? null,
+                views: $metrics['views'],   // impressions used as views
+                likes: $metrics['likes'],
+                comments: $metrics['comments'],
+                shares: $metrics['shares'],
+                saves: $metrics['saves'],
+                reach: $metrics['reach'],
                 raw: $raw,
                 fetchedAt: now()->toImmutable(),
             ));
