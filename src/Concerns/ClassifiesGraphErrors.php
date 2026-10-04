@@ -34,12 +34,24 @@ trait ClassifiesGraphErrors
             }
 
             // Object does not exist / deleted / unsupported get on the id.
-            if ($sub === 33 || in_array($code, [100, 803], true)) {
+            if ($sub === 33 || $code === 803 || ($code === 100 && $this->missingObject((string) ($error['message'] ?? '')))) {
                 return ErrorReason::NotFound;
+            }
+
+            // Any other #100 is an invalid request (e.g. "The value must be a
+            // valid insights metric" after a metric is retired): the object
+            // exists, so it must not be reported as gone.
+            if ($code === 100) {
+                return ErrorReason::Configuration;
             }
         }
 
         return parent::classifyError($status, $body);
+    }
+
+    private function missingObject(string $message): bool
+    {
+        return str_contains($message, 'does not exist') || str_contains($message, 'Unsupported get request');
     }
 
     /**

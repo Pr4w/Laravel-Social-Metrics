@@ -22,15 +22,29 @@ trait FetchesGraphInsights
     }
 
     /**
-     * Run a Graph Batch of GET insight calls (max 50 sub-requests per HTTP call).
-     * $requests maps each nativeId to its relative_url; for every 200 sub-response
-     * $map($nativeId, $insights) returns the PostMetrics to record. Non-200 subs
-     * and whole-batch failures are recorded as errors on $result.
+     * Run a Graph Batch of GET insight calls. For every 200 sub-response
+     * $map($nativeId, $insights) returns the PostMetrics to record.
      *
      * @param  array<string, string>  $requests  nativeId => relative_url
      * @param  callable(string, array): PostMetrics  $map
      */
     protected function graphBatch(string $version, ?string $token, array $requests, callable $map, DriverResult $result): void
+    {
+        $this->graphBatchEach($version, $token, $requests, function (string $id, array $body) use ($map, $result) {
+            $result->addPost($map($id, $this->flatten($body['data'] ?? [])));
+        }, $result);
+    }
+
+    /**
+     * Run a Graph Batch of GET calls (max 50 sub-requests per HTTP call).
+     * $requests maps each nativeId to its relative_url; for every 200 sub-response
+     * $each($nativeId, $body) receives the decoded body. Non-200 subs and
+     * whole-batch failures are recorded as errors on $result.
+     *
+     * @param  array<string, string>  $requests  nativeId => relative_url
+     * @param  callable(string, array): void  $each
+     */
+    protected function graphBatchEach(string $version, ?string $token, array $requests, callable $each, DriverResult $result): void
     {
         foreach (array_chunk($requests, 50, true) as $chunk) {
             $ids = array_keys($chunk);
@@ -62,8 +76,7 @@ trait FetchesGraphInsights
                     continue;
                 }
 
-                $body = json_decode($sub['body'] ?? '[]', true) ?: [];
-                $result->addPost($map($id, $this->flatten($body['data'] ?? [])));
+                $each($id, json_decode($sub['body'] ?? '[]', true) ?: []);
             }
         }
     }

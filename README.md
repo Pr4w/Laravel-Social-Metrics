@@ -216,7 +216,7 @@ identifiers are never read from the package config — you supply them per call.
 | Platform  | id alias key         | extra meta         | notes |
 |-----------|----------------------|--------------------|-------|
 | instagram | `ig_user_id`         | —                  | account metrics only |
-| facebook  | `page_id`            | `facebook_content` | Post nativeId is the `{pageId}_{postId}` composite; reels are the bare video id. Routing is by underscore; force it with `facebook_content` = `post`/`reel` |
+| facebook  | `page_id`            | `facebook_content` | Post nativeId is the `{pageId}_{postId}` composite (feed posts and reels); a bare id is a video id. Composite ids are routed by their attachment; force it with `facebook_content` = `post`/`reel` |
 | threads   | `threads_user_id`    | —                  | account metrics only |
 | youtube   | `channel_id`         | `api_key`          | auth is chosen by field: `accessToken` → OAuth (`mine=true`, no id needed); otherwise `meta['api_key']` + a `channel_id` |
 | linkedin  | (pass the URN as `accountId`) | `is_person`, `organization_urn` | type is read from the URN; see LinkedIn note below |
@@ -280,7 +280,9 @@ if ($error = $result->errors->first()) {
 
 Each vendor shapes errors differently, so each driver classifies its own. The Meta
 drivers (Instagram, Facebook, Threads) share the `ClassifiesGraphErrors` trait
-(Graph `code`/`error_subcode`); YouTube reads Google `error.errors[].reason`; TikTok
+(Graph `code`/`error_subcode`: a `#100` is `not_found` only for a missing object,
+subcode 33 or "does not exist"; any other `#100`, such as a retired metric, is
+`configuration`, so the post is not dropped); YouTube reads Google `error.errors[].reason`; TikTok
 reads its string `error.code` (it returns HTTP 200 with an error body); LinkedIn maps a
 403 (`ACCESS_DENIED`) to `permission` and otherwise uses the status-based default. The base `AbstractDriver::classifyError()` is the fallback
 every driver defers to for codes it does not recognize, and it sends anything it
@@ -363,6 +365,18 @@ platform APIs.
   analytics (watch time, subs gained/lost, per-day views) live in the separate
   **YouTube Analytics API** (`youtubeAnalytics.reports.query`, OAuth-only), not wired
   up yet.
-- **Facebook** routes by id shape: a `{pageId}_{postId}` composite goes to /insights (reactions summed into likes, post_impressions_unique as reach); a bare reel id goes to /video_insights (plays as views, reaction map summed into likes). Comments and shares are not exposed as discrete counts on either endpoint, so they stay null; reels keep plays, replays, watch time and social_actions in raw.
+- **Facebook** reads feed posts from `/{postId}/insights` (`post_media_view` as views,
+  `post_total_media_view_unique` as reach, `post_reactions_by_type_total` summed into
+  likes; the `post_impressions*` metrics were retired on June 15, 2026). Reels and videos
+  are read from `/{videoId}/video_insights`, which only takes the video id
+  (`blue_reels_play_count` as views, the reaction map summed into likes, reach null). A
+  bare id is treated as a video id. A `{pageId}_{postId}` composite can be either: store
+  reels that way, since Graph refuses the bare reel post id ("#12 singular statuses API
+  is deprecated"). The driver reads the composite's first attachment, and a video
+  attachment sends its target id to `video_insights` (kept in `raw['video_id']`; the
+  result keeps your composite as `nativeId`). That lookup costs one extra batch call per
+  50 composite ids; `facebook_content` = `post`/`reel` skips it. Comments and shares are
+  not exposed as discrete counts on either endpoint, so they stay null; reels keep plays,
+  replays, watch time and social_actions in raw.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.

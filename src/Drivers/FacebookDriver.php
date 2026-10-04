@@ -14,30 +14,42 @@ use Pr4w\SocialMetrics\Enums\MetricScope;
 use Pr4w\SocialMetrics\Support\MetricsContext;
 
 /**
- * Facebook Pages via the Graph API. Two content types, two endpoints:
+ * Facebook Pages via the Graph API. Two kinds of content, two endpoints:
  *
- *   - Feed posts: nativeId is the composite "{pageId}_{postId}" (it MUST contain
- *     the underscore). Hits /{id}/insights for reactions + unique impressions.
- *   - Reels: nativeId is the bare video id (no underscore). Hits
- *     /{id}/video_insights for the reel metric set.
+ *   - Feed posts: /{postId}/insights on the composite "{pageId}_{postId}".
+ *     views = post_media_view, reach = post_total_media_view_unique, likes =
+ *     post_reactions_by_type_total summed (post_impressions* were retired on
+ *     June 15, 2026).
+ *   - Reels and videos: /{videoId}/video_insights, which only takes the video
+ *     id. views = blue_reels_play_count, likes = post_video_likes_by_reaction_type
+ *     summed. Reach is not requested (post_impressions_unique is retired), so it
+ *     stays null.
  *
- * Routing is by id shape (underscore present = post), which matches how Facebook
- * forms these ids. A caller can force a type with meta['facebook_content'] =
- * 'post' | 'reel'; forcing 'post' on an id with no underscore is reported as a
+ * A bare id (no underscore) is a video id and goes straight to video_insights.
+ * A composite id may be a feed post or a reel (reels must be stored composite:
+ * Graph refuses the bare reel post id with "#12 singular statuses API is
+ * deprecated"), so its first attachment is read to tell them apart: a video
+ * attachment sends its target id to video_insights. meta['facebook_content'] =
+ * 'post' | 'reel' forces the type; forcing 'post' on a bare id is reported as a
  * malformed id rather than guessed.
  *
- * Facebook does not return comments or shares as discrete counts on either
- * endpoint (reels group them under post_video_social_actions, kept in raw), so
- * those fields are null. Needs a Page access token.
+ * PostMetrics::nativeId is always the id the caller passed; the video id is
+ * kept in raw['video_id']. Facebook does not return comments or shares as
+ * discrete counts on either endpoint (reels group them under
+ * post_video_social_actions, kept in raw), so those fields are null. Needs a
+ * Page access token.
  */
 class FacebookDriver extends AbstractDriver
 {
     use ClassifiesGraphErrors;
     use FetchesGraphInsights;
 
-    private const POST_METRICS = 'post_impressions_unique,post_reactions_by_type_total';
+    private const POST_METRICS = 'post_media_view,post_total_media_view_unique,post_reactions_by_type_total';
 
     private const REEL_METRICS = 'blue_reels_play_count,fb_reels_total_plays,fb_reels_replay_count,post_video_avg_time_watched,post_video_view_time,post_video_followers,post_video_likes_by_reaction_type,post_video_social_actions';
+
+    /** Fields that tell a feed post from a reel or video post. */
+    private const ATTACHMENT_FIELDS = 'attachments{media_type,type,target{id}}';
 
     public function platform(): string
     {
@@ -47,73 +59,110 @@ class FacebookDriver extends AbstractDriver
     public function fetchPostMetrics(array $nativeIds, MetricsContext $context): DriverResult
     {
         $result = new DriverResult;
+        $version = $this->graphVersion($context);
+        $targets = $this->resolveTargets($nativeIds, $context, $version, $result);
 
-        // Resolve content type per id (a forced post without an underscore is
-        // malformed), building the batch requests and remembering each type.
         $requests = [];
-        $types = [];
 
-        foreach ($nativeIds as $id) {
-            $type = $this->contentType($id, $context);
-
-            if ($type === 'post' && ! str_contains($id, '_')) {
-                $result->addError(new MetricsError(
-                    'facebook', MetricScope::Post, $id, ErrorReason::Configuration,
-                    'Malformed Facebook post id: expected the composite "{pageId}_{postId}".',
-                ));
-
-                continue;
-            }
-
-            $types[$id] = $type;
-            $requests[$id] = $type === 'reel'
-                ? "{$id}/video_insights?metric=" . self::REEL_METRICS
+        foreach ($targets as $id => $videoId) {
+            $requests[$id] = $videoId !== null
+                ? "{$videoId}/video_insights?metric=" . self::REEL_METRICS
                 : "{$id}/insights?metric=" . self::POST_METRICS;
         }
 
-        $this->graphBatch($this->graphVersion($context), $context->accessToken, $requests, fn (string $id, array $insights) => $types[$id] === 'reel'
-            ? $this->mapReel($id, $insights)
+        $this->graphBatch($version, $context->accessToken, $requests, fn (string $id, array $insights) => $targets[$id] !== null
+            ? $this->mapReel($id, $targets[$id], $insights)
             : $this->mapPost($id, $insights), $result);
 
         return $result;
     }
 
-    private function contentType(string $id, MetricsContext $context): string
+    /**
+     * Decide where each id's insights live. Returns nativeId => video id for
+     * reels and videos (read from video_insights), or null for feed posts (read
+     * from insights). Ids that cannot be resolved are recorded as errors and
+     * left out.
+     *
+     * @return array<string, string|null>
+     */
+    private function resolveTargets(array $nativeIds, MetricsContext $context, string $version, DriverResult $result): array
     {
         $forced = $context->meta['facebook_content'] ?? null;
+        $targets = [];
+        $lookups = [];
 
-        if ($forced === 'reel' || $forced === 'post') {
-            return $forced;
+        foreach ($nativeIds as $id) {
+            $composite = str_contains($id, '_');
+
+            if ($forced === 'post' && ! $composite) {
+                $result->addError(new MetricsError(
+                    'facebook', MetricScope::Post, $id, ErrorReason::Configuration,
+                    'Malformed Facebook post id: expected the composite "{pageId}_{postId}".',
+                ));
+            } elseif (! $composite) {
+                $targets[$id] = $id;
+            } elseif ($forced === 'post') {
+                $targets[$id] = null;
+            } else {
+                $lookups[$id] = "{$id}?fields=" . rawurlencode(self::ATTACHMENT_FIELDS);
+            }
         }
 
-        return str_contains($id, '_') ? 'post' : 'reel';
+        $this->graphBatchEach($version, $context->accessToken, $lookups, function (string $id, array $body) use (&$targets, $forced, $result) {
+            $attachment = $body['attachments']['data'][0] ?? [];
+            $videoId = $attachment['target']['id'] ?? null;
+
+            if ($videoId !== null && ($forced === 'reel' || $this->isVideo($attachment))) {
+                $targets[$id] = (string) $videoId;
+            } elseif ($forced === 'reel') {
+                $result->addError(new MetricsError(
+                    'facebook', MetricScope::Post, $id, ErrorReason::Configuration,
+                    'Forced as a reel, but the post has no video attachment to read video_insights from.',
+                ));
+            } else {
+                $targets[$id] = null;
+            }
+        }, $result);
+
+        return $targets;
     }
 
-    /** Feed post: reactions summed into likes, unique impressions as reach. */
+    /**
+     * Whether an attachment is a reel or video. media_type is "video" for both;
+     * type is checked too in case a reel reports a reel-specific type. Verify
+     * against a live reel if reels start landing on /insights.
+     */
+    private function isVideo(array $attachment): bool
+    {
+        return strtolower((string) ($attachment['media_type'] ?? '')) === 'video'
+            || str_contains(strtolower((string) ($attachment['type'] ?? '')), 'reel');
+    }
+
+    /** Feed post: media views as views, unique media viewers as reach, reactions summed into likes. */
     private function mapPost(string $id, array $insights): PostMetrics
     {
         return new PostMetrics(
             platform: 'facebook',
             nativeId: $id,
+            views: $this->toInt($insights['post_media_view'] ?? null),
             likes: $this->sumReactions($insights['post_reactions_by_type_total'] ?? null),
-            reach: $this->toInt($insights['post_impressions_unique'] ?? null),
+            reach: $this->toInt($insights['post_total_media_view_unique'] ?? null),
             raw: $insights,
             fetchedAt: now()->toImmutable(),
         );
     }
 
-    /** Reel: plays as views, unique impressions as reach, reaction map summed into likes. */
-    private function mapReel(string $id, array $insights): PostMetrics
+    /** Reel or video: plays as views, reaction map summed into likes. */
+    private function mapReel(string $id, string $videoId, array $insights): PostMetrics
     {
         return new PostMetrics(
             platform: 'facebook',
             nativeId: $id,
             views: $this->toInt($insights['blue_reels_play_count'] ?? null),
             likes: $this->sumReactions($insights['post_video_likes_by_reaction_type'] ?? null),
-            reach: $this->toInt($insights['post_impressions_unique'] ?? null),
             // comments + shares are grouped under post_video_social_actions; raw carries
             // it plus plays_total, replays, watch times and follows.
-            raw: $insights,
+            raw: $insights + ['video_id' => $videoId],
             fetchedAt: now()->toImmutable(),
         );
     }
