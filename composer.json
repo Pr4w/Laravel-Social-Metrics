@@ -1,6 +1,6 @@
 {
     "name": "pr4w/laravel-social-metrics",
-    "description": "Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, TikTok, YouTube, LinkedIn and Threads. Bring your own token.",
+    "description": "Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads and X. Bring your own token.",
     "type": "library",
     "license": "MIT",
     "require": {

@@ -1,6 +1,6 @@
 # Laravel Social Metrics
 
-Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, TikTok, YouTube, LinkedIn and Threads.
+Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads and X (Twitter).
 
 It depends on no auth provider. You hand it an access token (inline, or via a resolver you control) and it fetches, normalizes and aggregates metrics. It pairs naturally with `pr4w/laravel-social-tokens`, but that is one option, not a requirement: any token source works.
 
@@ -221,6 +221,7 @@ identifiers are never read from the package config — you supply them per call.
 | youtube   | `channel_id`         | `api_key`          | auth is chosen by field: `accessToken` → OAuth (`mine=true`, no id needed); otherwise `meta['api_key']` + a `channel_id` |
 | linkedin  | (pass the URN as `accountId`) | `is_person`, `organization_urn` | type is read from the URN; see LinkedIn note below |
 | tiktok    | —                    | —                  | open_id comes back from the API |
+| twitter   | —                    | —                  | post metrics only; nativeId is the post id |
 
 **Bottom line:** pass the native id as `accountId` and skip `meta` entirely — reach for
 `meta` only when a driver needs a second signal, or when your `accountId` isn't the
@@ -298,14 +299,13 @@ own driver, or in a subclass registered via `extend()`, to teach it new codes.
 ```php
 use Pr4w\SocialMetrics\Contracts\MetricsDriver;
 
-SocialMetrics::extend('x', fn () => new XMetricsDriver());
+SocialMetrics::extend('bluesky', fn () => new BlueskyMetricsDriver());
 ```
 
 Implement `MetricsDriver`, or extend `AbstractDriver` for the shared HTTP error
 mapping, `int()` null-safe casting, and Graph insight flattening. A driver only ever
 sees a `MetricsContext` (platform, token, accountId, meta, config); it never knows
-where the token came from. X was left out of v1 (no proven fetcher
-yet) but drop in this way.
+where the token came from.
 
 ## Testing
 
@@ -378,5 +378,15 @@ platform APIs.
   50 composite ids; `facebook_content` = `post`/`reel` skips it. Comments and shares are
   not exposed as discrete counts on either endpoint, so they stay null; reels keep plays,
   replays, watch time and social_actions in raw.
+- **X (Twitter)** (platform `twitter`) reads `GET /2/tweets?ids=…&tweet.fields=public_metrics`,
+  100 ids per call, with the user's OAuth 2 token (`tweet.read`). `impression_count` is
+  views, `like_count` likes, `reply_count` comments, `retweet_count + quote_count`
+  shares, `bookmark_count` saves; reach is null and `public_metrics` is kept in raw.
+  Every post read is billed (pay-per-use), so the driver deduplicates ids, requests each
+  one at most once per call and never retries. An id missing from `data` is matched
+  against `errors`: "Could not find" is `not_found`, a protected account's post is
+  `permission`. A 401 is `needs_reconnect`, 429 `rate_limited`, 402 (out of credits)
+  `configuration`; after a 401, 402 or 429 the remaining batches are not sent and their
+  ids get the same error. Account metrics are not implemented for X.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.
