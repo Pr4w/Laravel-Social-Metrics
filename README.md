@@ -222,7 +222,7 @@ identifiers are never read from the package config — you supply them per call.
 | linkedin  | (pass the URN as `accountId`) | `is_person`, `organization_urn` | type is read from the URN; see LinkedIn note below |
 | tiktok    | —                    | —                  | open_id comes back from the API |
 | twitter   | —                    | —                  | post metrics only; nativeId is the post id |
-| bluesky   | `did`                | —                  | no token; nativeId is the post's AT URI, accountId the DID (or handle) |
+| bluesky   | `did`                | —                  | no token; nativeId is the post's AT URI in its DID form; the account is a DID or a handle |
 
 **Bottom line:** pass the native id as `accountId` and skip `meta` entirely — reach for
 `meta` only when a driver needs a second signal, or when your `accountId` isn't the
@@ -393,8 +393,17 @@ platform APIs.
   `drivers.bluesky.appview` to point elsewhere), so it needs no token. Posts:
   `app.bsky.feed.getPosts`, 25 AT URIs per call; `likeCount` is likes, `replyCount`
   comments, `repostCount` shares, `bookmarkCount` saves, and `quoteCount` stays in raw.
-  Bluesky exposes no views or reach (null). A URI missing from the answer (a deleted
-  post, a deleted or suspended account) is `not_found`. Account: `app.bsky.actor.getProfile`
-  gives followers, following and posts.
+  Bluesky exposes no views or reach (null). Store a post's URI in its DID form
+  (`at://did:…/app.bsky.feed.post/…`, as `createRecord` returns it): a handle can
+  change, so a handle-based URI, a web URL or a bare rkey is reported as
+  `configuration` and never sent (one bad URI would otherwise fail its whole call).
+  `getPosts` silently leaves out a deleted post, but also every post of a deactivated
+  or taken down account, which can come back. For missing posts only, the driver reads
+  each author's profile once: an active author means the post was deleted
+  (`not_found`); a deactivated or taken down author gives `unknown`, so the post is
+  logged without being dropped. Account: `app.bsky.actor.getProfile` (actor =
+  `meta['did'] ?? accountId`, a DID or a handle) gives followers, following and posts;
+  the result keeps the identifier you asked with as `accountId`, and the DID is in raw.
+  A deactivated or taken down account is `unknown` there too.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.
