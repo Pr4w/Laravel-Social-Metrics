@@ -29,7 +29,10 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
  *
  * A post is returned whenever any source produced a metric; failed sources are
  * left null and recorded in raw. An error is reported, with no PostMetrics, only
- * when nothing came back for that URN.
+ * when nothing came back for that URN: a retryable one first, then a NotFound
+ * from any source (the post is gone), then the memberCreatorPostAnalytics one.
+ * The socialActions error comes last: on a member's post it is always the
+ * r_member_social refusal ("member is unauthorized"), which hides the real cause.
  *
  * Requests are fired in pools keyed by "{index}|{what}", then reassembled.
  */
@@ -111,8 +114,8 @@ class LinkedInDriver extends AbstractDriver
                     $metrics['comments'] ??= $this->toInt($slot->json('commentsSummary.aggregatedTotalComments'));
                     $raw['socialActions'] = $slot->json();
                 } else {
-                    // Listed first so it is the one reported when nothing is retryable.
-                    array_unshift($errors, $socialError = $this->slotError($slot, MetricScope::Post, $urn, 'socialActions'));
+                    // Listed after the analytics errors: it is only a likes/comments fallback.
+                    $errors[] = $socialError = $this->slotError($slot, MetricScope::Post, $urn, 'socialActions');
                     $raw['socialActions_error'] = [
                         'status' => $socialError->httpStatus,
                         'reason' => $socialError->reason->value,
@@ -123,8 +126,14 @@ class LinkedInDriver extends AbstractDriver
 
             if (array_filter($metrics, fn (?int $value) => $value !== null) === []) {
                 // No source produced anything. Prefer a retryable failure so the
-                // caller retries; otherwise report socialActions, the last source.
-                $result->addError(collect($errors)->first(fn (MetricsError $e) => $e->retryable()) ?? $errors[0]);
+                // caller retries, then a NotFound so it stops asking for a deleted
+                // post; otherwise report the first analytics error.
+                $errors = collect($errors);
+                $result->addError(
+                    $errors->first(fn (MetricsError $e) => $e->retryable())
+                        ?? $errors->first(fn (MetricsError $e) => $e->reason === ErrorReason::NotFound)
+                        ?? $errors->first()
+                );
 
                 continue;
             }

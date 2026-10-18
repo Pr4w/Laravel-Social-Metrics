@@ -131,7 +131,10 @@ it('falls back to socialActions for a page post the analytics do not cover', fun
 ]);
 
 it('reports one error and no metrics when every source fails', function () {
-    fakeLinkedIn([BROKEN_URN => ['social' => denied(), 'analytics' => ['*' => [403, ['code' => 'ACCESS_DENIED']]]]]);
+    fakeLinkedIn([BROKEN_URN => ['social' => denied(), 'analytics' => ['*' => [403, [
+        'code' => 'ACCESS_DENIED',
+        'message' => 'Not enough permissions to access: memberCreatorPostAnalytics.FINDER-entity.20260501',
+    ]]]]]);
 
     $result = fetchLinkedIn(BROKEN_URN);
     $error = $result->errors->sole();
@@ -142,7 +145,34 @@ it('reports one error and no metrics when every source fails', function () {
         ->and($error->scope)->toBe(MetricScope::Post)
         ->and($error->nativeId)->toBe(BROKEN_URN)
         ->and($error->httpStatus)->toBe(403)
-        ->and($error->message)->toContain('partnerApiSocialActions');
+        ->and($error->message)->toContain('memberCreatorPostAnalytics');
+});
+
+it('reports a deleted post as NotFound, not the socialActions refusal', function () {
+    $urn = 'urn:li:ugcPost:7514014390342402048';
+
+    fakeLinkedIn([$urn => [
+        'social' => [403, [
+            'status' => 403,
+            'serviceErrorCode' => 100,
+            'code' => 'ACCESS_DENIED',
+            'message' => "member is unauthorized on {$urn}",
+        ]],
+        'analytics' => ['*' => [404, [
+            'message' => 'NOT_FOUND: RestException{response=RestResponse[headers={},cookies=[],status=404,entityLength=0]}',
+            'status' => 404,
+        ]]],
+    ]]);
+
+    $result = fetchLinkedIn($urn);
+    $error = $result->errors->sole();
+
+    expect($result->posts)->toBeEmpty()
+        ->and(sentSocialActions($urn))->toBeTrue()
+        ->and($error->reason)->toBe(ErrorReason::NotFound)
+        ->and($error->httpStatus)->toBe(404)
+        ->and($error->message)->toContain('NOT_FOUND')
+        ->and($error->nativeId)->toBe($urn);
 });
 
 it('resolves each URN of a mixed batch on its own', function () {
