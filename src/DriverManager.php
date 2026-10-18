@@ -4,6 +4,7 @@ namespace Pr4w\SocialMetrics;
 
 use Illuminate\Support\Manager;
 use Pr4w\SocialMetrics\Contracts\MetricsDriver;
+use Pr4w\SocialMetrics\Drivers\BlueskyDriver;
 use Pr4w\SocialMetrics\Drivers\FacebookDriver;
 use Pr4w\SocialMetrics\Drivers\InstagramDriver;
 use Pr4w\SocialMetrics\Drivers\LinkedInDriver;
@@ -15,7 +16,7 @@ use RuntimeException;
 
 /**
  * Resolves platform drivers. Register your own with
- * SocialMetrics::extend('bluesky', fn () => new BlueskyDriver()).
+ * SocialMetrics::extend('mastodon', fn () => new MastodonDriver()).
  */
 class DriverManager extends Manager
 {
@@ -57,5 +58,10 @@ class DriverManager extends Manager
     protected function createTwitterDriver(): MetricsDriver
     {
         return new TwitterDriver;
+    }
+
+    protected function createBlueskyDriver(): MetricsDriver
+    {
+        return new BlueskyDriver;
     }
 }

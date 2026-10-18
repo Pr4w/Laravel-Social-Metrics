@@ -35,6 +35,11 @@ return [
             'max_videos' => 200,
         ],
 
+        'bluesky' => [
+            // The public AppView the counts are read from (no token needed).
+            'appview' => env('SOCIAL_METRICS_BLUESKY_APPVIEW', 'https://public.api.bsky.app/xrpc/'),
+        ],
+
     ],
 
 ];

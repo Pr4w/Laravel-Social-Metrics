@@ -1,6 +1,6 @@
 # Laravel Social Metrics
 
-Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads and X (Twitter).
+Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads, X (Twitter) and Bluesky.
 
 It depends on no auth provider. You hand it an access token (inline, or via a resolver you control) and it fetches, normalizes and aggregates metrics. It pairs naturally with `pr4w/laravel-social-tokens`, but that is one option, not a requirement: any token source works.
 
@@ -222,6 +222,7 @@ identifiers are never read from the package config — you supply them per call.
 | linkedin  | (pass the URN as `accountId`) | `is_person`, `organization_urn` | type is read from the URN; see LinkedIn note below |
 | tiktok    | —                    | —                  | open_id comes back from the API |
 | twitter   | —                    | —                  | post metrics only; nativeId is the post id |
+| bluesky   | `did`                | —                  | no token; nativeId is the post's AT URI, accountId the DID (or handle) |
 
 **Bottom line:** pass the native id as `accountId` and skip `meta` entirely — reach for
 `meta` only when a driver needs a second signal, or when your `accountId` isn't the
@@ -299,7 +300,7 @@ own driver, or in a subclass registered via `extend()`, to teach it new codes.
 ```php
 use Pr4w\SocialMetrics\Contracts\MetricsDriver;
 
-SocialMetrics::extend('bluesky', fn () => new BlueskyMetricsDriver());
+SocialMetrics::extend('mastodon', fn () => new MastodonMetricsDriver());
 ```
 
 Implement `MetricsDriver`, or extend `AbstractDriver` for the shared HTTP error
@@ -388,5 +389,12 @@ platform APIs.
   `permission`. A 401 is `needs_reconnect`, 429 `rate_limited`, 402 (out of credits)
   `configuration`; after a 401, 402 or 429 the remaining batches are not sent and their
   ids get the same error. Account metrics are not implemented for X.
+- **Bluesky** (platform `bluesky`) reads the public AppView (`public.api.bsky.app`,
+  `drivers.bluesky.appview` to point elsewhere), so it needs no token. Posts:
+  `app.bsky.feed.getPosts`, 25 AT URIs per call; `likeCount` is likes, `replyCount`
+  comments, `repostCount` shares, `bookmarkCount` saves, and `quoteCount` stays in raw.
+  Bluesky exposes no views or reach (null). A URI missing from the answer (a deleted
+  post, a deleted or suspended account) is `not_found`. Account: `app.bsky.actor.getProfile`
+  gives followers, following and posts.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.
