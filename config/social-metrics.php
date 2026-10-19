@@ -40,6 +40,12 @@ return [
             'appview' => env('SOCIAL_METRICS_BLUESKY_APPVIEW', 'https://public.api.bsky.app/xrpc/'),
         ],
 
+        'pinterest' => [
+            // Pinterest's Sandbox (https://api-sandbox.pinterest.com/v5/) for an app with
+            // Trial access, whose tokens only work there. It has no analytics.
+            'api_url' => env('SOCIAL_METRICS_PINTEREST_API_URL', 'https://api.pinterest.com/v5/'),
+        ],
+
     ],
 
 ];

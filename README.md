@@ -1,6 +1,6 @@
 # Laravel Social Metrics
 
-Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads, X (Twitter) and Bluesky.
+Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads, X (Twitter), Bluesky and Pinterest.
 
 It depends on no auth provider. You hand it an access token (inline, or via a resolver you control) and it fetches, normalizes and aggregates metrics. It pairs naturally with `pr4w/laravel-social-tokens`, but that is one option, not a requirement: any token source works.
 
@@ -223,6 +223,7 @@ identifiers are never read from the package config — you supply them per call.
 | tiktok    | —                    | —                  | open_id comes back from the API |
 | twitter   | —                    | —                  | post metrics only; nativeId is the post id |
 | bluesky   | `did`                | —                  | no token; nativeId is the post's AT URI in its DID form; the account is a DID or a handle |
+| pinterest | `board_id`           | `api_url`          | nativeId is the Pin id; the account is a board (accountId its id) |
 
 **Bottom line:** pass the native id as `accountId` and skip `meta` entirely — reach for
 `meta` only when a driver needs a second signal, or when your `accountId` isn't the
@@ -405,5 +406,16 @@ platform APIs.
   `meta['did'] ?? accountId`, a DID or a handle) gives followers, following and posts;
   the result keeps the identifier you asked with as `accountId`, and the DID is in raw.
   A deactivated or taken down account is `unknown` there too.
+- **Pinterest** (platform `pinterest`) reads `GET /pins/{id}/analytics` with the
+  member's OAuth token (`boards:read`, `pins:read`), one call per Pin. Pinterest keeps
+  90 days of daily metrics: `IMPRESSION` (views) and `SAVE` (saves) are summed over the
+  last 90 days, a Pin's whole life until it is 90 days old, while `TOTAL_REACTIONS`
+  (likes) and `TOTAL_COMMENTS` (comments) are lifetime totals. `PIN_CLICK` and
+  `OUTBOUND_CLICK` stay in raw; shares and reach are null. A 403 (some analytics are
+  business accounts only) is `permission`, a deleted Pin `not_found`; after a 401 or a
+  429 the remaining Pins are not requested and get the same error. The account is a
+  board (Pins are published to boards): `GET /boards/{id}` gives its followers and
+  Pins. Pinterest's Sandbox has no analytics; `drivers.pinterest.api_url`, or
+  `meta['api_url']` per call, points the driver at another host.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.

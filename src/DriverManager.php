@@ -8,6 +8,7 @@ use Pr4w\SocialMetrics\Drivers\BlueskyDriver;
 use Pr4w\SocialMetrics\Drivers\FacebookDriver;
 use Pr4w\SocialMetrics\Drivers\InstagramDriver;
 use Pr4w\SocialMetrics\Drivers\LinkedInDriver;
+use Pr4w\SocialMetrics\Drivers\PinterestDriver;
 use Pr4w\SocialMetrics\Drivers\ThreadsDriver;
 use Pr4w\SocialMetrics\Drivers\TikTokDriver;
 use Pr4w\SocialMetrics\Drivers\TwitterDriver;
@@ -63,5 +64,10 @@ class DriverManager extends Manager
     protected function createBlueskyDriver(): MetricsDriver
     {
         return new BlueskyDriver;
+    }
+
+    protected function createPinterestDriver(): MetricsDriver
+    {
+        return new PinterestDriver;
     }
 }
