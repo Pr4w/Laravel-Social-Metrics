@@ -7,6 +7,7 @@ use Pr4w\SocialMetrics\Contracts\MetricsDriver;
 use Pr4w\SocialMetrics\Drivers\BlueskyDriver;
 use Pr4w\SocialMetrics\Drivers\FacebookDriver;
 use Pr4w\SocialMetrics\Drivers\InstagramDriver;
+use Pr4w\SocialMetrics\Drivers\InstagramLoginDriver;
 use Pr4w\SocialMetrics\Drivers\LinkedInDriver;
 use Pr4w\SocialMetrics\Drivers\PinterestDriver;
 use Pr4w\SocialMetrics\Drivers\ThreadsDriver;
@@ -29,6 +30,11 @@ class DriverManager extends Manager
     protected function createInstagramDriver(): MetricsDriver
     {
         return new InstagramDriver;
+    }
+
+    protected function createInstagramLoginDriver(): MetricsDriver
+    {
+        return new InstagramLoginDriver;
     }
 
     protected function createFacebookDriver(): MetricsDriver

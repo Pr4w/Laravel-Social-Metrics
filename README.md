@@ -1,6 +1,6 @@
 # Laravel Social Metrics
 
-Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads, X (Twitter), Bluesky and Pinterest.
+Auth-agnostic social analytics engine: account-level and post-level engagement across Instagram (through a Facebook Page or with Instagram Login), Facebook, TikTok, YouTube, LinkedIn, Threads, X (Twitter), Bluesky and Pinterest.
 
 It depends on no auth provider. You hand it an access token (inline, or via a resolver you control) and it fetches, normalizes and aggregates metrics. It pairs naturally with `pr4w/laravel-social-tokens`, but that is one option, not a requirement: any token source works.
 
@@ -84,6 +84,7 @@ SocialMetrics::resolveAccountsUsing(function (string $platform, string|int|null 
 $result = SocialMetrics::fetchPosts([
     PostRef::make('instagram', '178414...', accountId: 1),
     PostRef::make('instagram', '178402...', accountId: 7),   // different account, its own token
+    PostRef::make('instagram_login', '180000...', accountId: 9),  // Instagram Login token (IGAA...)
     PostRef::make('youtube', 'dQw4w9WgXcQ', meta: ['api_key' => $ytKey]),  // key-based, no token
     PostRef::make('linkedin', 'urn:li:share:7123...', accountId: 3),
 ]);
@@ -173,6 +174,7 @@ use Pr4w\SocialMetrics\Support\AccountRef;
 // Pass the platform-native id as accountId — no meta needed
 $result = SocialMetrics::fetchAccounts([
     AccountRef::make('instagram', accountId: '17841400000000001', accessToken: $igToken),
+    AccountRef::make('instagram_login', accountId: '17841400000000099', accessToken: $igaaToken),
     AccountRef::make('youtube',   accountId: 'UC...', meta: ['api_key' => $key]),       // key path
     AccountRef::make('youtube',   accessToken: $ytToken),                               // OAuth: mine=true, no id
     AccountRef::make('linkedin',  accountId: 'urn:li:person:abc123', accessToken: $liToken),
@@ -216,6 +218,7 @@ identifiers are never read from the package config — you supply them per call.
 | Platform  | id alias key         | extra meta         | notes |
 |-----------|----------------------|--------------------|-------|
 | instagram | `ig_user_id`         | —                  | account metrics only |
+| instagram_login | `ig_user_id`   | —                  | account metrics only; the professional account's id (`/me` `user_id`) |
 | facebook  | `page_id`            | `facebook_content` | Post nativeId is the `{pageId}_{postId}` composite (feed posts and reels); a bare id is a video id. Composite ids are routed by their attachment; force it with `facebook_content` = `post`/`reel` |
 | threads   | `threads_user_id`    | —                  | account metrics only |
 | youtube   | `channel_id`         | `api_key`          | auth is chosen by field: `accessToken` → OAuth (`mine=true`, no id needed); otherwise `meta['api_key']` + a `channel_id` |
@@ -282,8 +285,10 @@ if ($error = $result->errors->first()) {
 ### Classification is per-platform
 
 Each vendor shapes errors differently, so each driver classifies its own. The Meta
-drivers (Instagram, Facebook, Threads) share the `ClassifiesGraphErrors` trait
-(Graph `code`/`error_subcode`: a `#100` is `not_found` only for a missing object,
+drivers (Instagram, Instagram Login, Facebook, Threads) share the `ClassifiesGraphErrors`
+trait (Graph `code`/`error_subcode`: 190 is `needs_reconnect`; 4, 17, 32, 613 and the
+80000-80014 business use case limits, such as 80002 for an Instagram account, are
+`rate_limited`; a `#100` is `not_found` only for a missing object,
 subcode 33 or "does not exist"; any other `#100`, such as a retired metric, is
 `configuration`, so the post is not dropped); YouTube reads Google `error.errors[].reason`; TikTok
 reads its string `error.code` (it returns HTTP 200 with an error body); LinkedIn maps a
@@ -367,6 +372,19 @@ platform APIs.
   analytics (watch time, subs gained/lost, per-day views) live in the separate
   **YouTube Analytics API** (`youtubeAnalytics.reports.query`, OAuth-only), not wired
   up yet.
+- **Instagram Login** (platform `instagram_login`, the key of laravel-social-tokens'
+  connector) is for professional accounts connected through "Instagram API with
+  Instagram Login", with no Facebook Page. Their tokens (`IGAA…`) only work on
+  `graph.instagram.com`, so this driver never calls `graph.facebook.com`, and the
+  Graph Batch endpoint, which is not documented there, is not used: one
+  `GET /{media-id}/insights` per media, fired in parallel, so a failed media only fails
+  its own id. Same metrics and mapping as `instagram` (`views`, `reach`, `likes`,
+  `comments`, `shares`, `saved` as saves; `total_interactions` in raw). Likes, comments
+  and saved do not exist for stories, so a story id gets an error for that id
+  (`configuration`), not a crash. Account: `GET /{ig-user-id}?fields=followers_count,
+  follows_count,media_count`, with the id from `meta['ig_user_id'] ?? accountId`;
+  `drivers.instagram_login.graph_version` sets the version. The `instagram` driver is
+  unchanged and still uses `graph.facebook.com`.
 - **Facebook** reads feed posts from `/{postId}/insights` (`post_media_view` as views,
   `post_total_media_view_unique` as reach, `post_reactions_by_type_total` summed into
   likes; the `post_impressions*` metrics were retired on June 15, 2026). Reels and videos

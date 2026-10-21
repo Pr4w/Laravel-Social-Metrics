@@ -18,17 +18,26 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
  * Graph Batch endpoint: one HTTP call returns many media's insights. nativeId
  * is the media id (stored by Laravel-Social-Poster at publish time), so no
  * shortcode resolution is needed.
+ *
+ * InstagramLoginDriver reuses the metric list, the mapping and the account
+ * call, on graph.instagram.com.
  */
 class InstagramDriver extends AbstractDriver
 {
     use ClassifiesGraphErrors;
     use FetchesGraphInsights;
 
-    private const METRICS = 'views,reach,likes,comments,shares,saved,total_interactions';
+    protected const METRICS = 'views,reach,likes,comments,shares,saved,total_interactions';
 
     public function platform(): string
     {
         return 'instagram';
+    }
+
+    /** The Graph host the account call goes to. */
+    protected function graphHost(): string
+    {
+        return 'https://graph.facebook.com';
     }
 
     public function fetchPostMetrics(array $nativeIds, MetricsContext $context): DriverResult
@@ -41,8 +50,16 @@ class InstagramDriver extends AbstractDriver
             $requests[$id] = "{$id}/insights?metric=" . self::METRICS;
         }
 
-        $this->graphBatch($this->graphVersion($context), $context->accessToken, $requests, fn (string $id, array $i) => new PostMetrics(
-            platform: 'instagram',
+        $this->graphBatch($this->graphVersion($context), $context->accessToken, $requests, fn (string $id, array $i) => $this->mapPost($id, $i), $result);
+
+        return $result;
+    }
+
+    /** Media insights, flattened to name => value, as PostMetrics. */
+    protected function mapPost(string $id, array $i): PostMetrics
+    {
+        return new PostMetrics(
+            platform: $this->platform(),
             nativeId: $id,
             views: $i['views'] ?? null,
             likes: $i['likes'] ?? null,
@@ -52,9 +69,7 @@ class InstagramDriver extends AbstractDriver
             reach: $i['reach'] ?? null,
             raw: $i,
             fetchedAt: now()->toImmutable(),
-        ), $result);
-
-        return $result;
+        );
     }
 
     public function fetchAccountMetrics(MetricsContext $context): DriverResult
@@ -65,12 +80,12 @@ class InstagramDriver extends AbstractDriver
 
         if (! $igUserId) {
             return $result->addError(new MetricsError(
-                'instagram', MetricScope::Account, null, ErrorReason::Configuration,
+                $this->platform(), MetricScope::Account, null, ErrorReason::Configuration,
                 'Missing IG business user id (pass it as accountId or meta ig_user_id).',
             ));
         }
 
-        $response = Http::get("https://graph.facebook.com/{$version}/{$igUserId}", [
+        $response = Http::get("{$this->graphHost()}/{$version}/{$igUserId}", [
             'fields' => 'followers_count,follows_count,media_count',
             'access_token' => $context->accessToken,
         ]);
@@ -82,7 +97,7 @@ class InstagramDriver extends AbstractDriver
         $data = $response->json() ?? [];
 
         return $result->setAccount(new AccountMetrics(
-            platform: 'instagram',
+            platform: $this->platform(),
             accountId: (string) $igUserId,
             followers: $this->int($data, 'followers_count'),
             following: $this->int($data, 'follows_count'),

@@ -15,7 +15,7 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
  */
 trait FetchesGraphInsights
 {
-    /** The graph.facebook.com API version, overridable via driver config. */
+    /** The Graph API version (graph.facebook.com or graph.instagram.com), overridable via driver config. */
     protected function graphVersion(MetricsContext $context): string
     {
         return $context->config['graph_version'] ?? 'v21.0';

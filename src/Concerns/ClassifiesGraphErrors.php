@@ -7,8 +7,9 @@ use Pr4w\SocialMetrics\Enums\ErrorReason;
 use Pr4w\SocialMetrics\Enums\MetricScope;
 
 /**
- * Error classification shared by the Meta Graph drivers (Instagram, Facebook,
- * Threads), which all return the same {error: {code, error_subcode, ...}} shape.
+ * Error classification shared by the Meta Graph drivers (Instagram, Instagram
+ * Login, Facebook, Threads), which all return the same
+ * {error: {code, error_subcode, ...}} shape.
  * Anything not recognized falls through to the generic status-based default.
  *
  * Codes from the Graph API error reference; verify against current docs.
@@ -28,8 +29,9 @@ trait ClassifiesGraphErrors
                 return ErrorReason::NeedsReconnect;
             }
 
-            // Throttling / rate limiting.
-            if (in_array($code, [4, 17, 32, 613], true) || $sub === 2446079) {
+            // Throttling / rate limiting. 80000-80014 are the business use case
+            // limits (80002: too many calls to this Instagram account).
+            if (in_array($code, [4, 17, 32, 613], true) || ($code >= 80000 && $code <= 80014) || $sub === 2446079) {
                 return ErrorReason::RateLimited;
             }
 

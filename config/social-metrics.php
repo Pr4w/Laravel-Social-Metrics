@@ -22,6 +22,11 @@ return [
             'graph_version' => 'v21.0',
         ],
 
+        // Instagram API with Instagram Login (graph.instagram.com, no Facebook Page).
+        'instagram_login' => [
+            'graph_version' => 'v21.0',
+        ],
+
         'facebook' => [
             'graph_version' => 'v21.0',
         ],
