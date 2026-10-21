@@ -47,7 +47,7 @@ it('still reads post insights through one Graph Batch on graph.facebook.com', fu
 
     Http::assertSentCount(1);
     Http::assertSent(fn (Request $r) => $r->method() === 'POST'
-        && $r->url() === 'https://graph.facebook.com/v21.0/'
+        && $r->url() === 'https://graph.facebook.com/v25.0/'
         && json_decode($r->data()['batch'], true) === [[
             'method' => 'GET',
             'relative_url' => IG_MEDIA.'/insights?metric=views,reach,likes,comments,shares,saved,total_interactions',
@@ -64,7 +64,7 @@ it('still reads account metrics on graph.facebook.com', function () {
         ->and($account->following)->toBe(50)
         ->and($account->posts)->toBe(120);
 
-    Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://graph.facebook.com/v21.0/'.IG_USER.'?'));
+    Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://graph.facebook.com/v25.0/'.IG_USER.'?'));
 });
 
 it('still reports a missing account id as Configuration for instagram', function () {

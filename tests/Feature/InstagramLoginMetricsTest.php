@@ -96,11 +96,11 @@ it('reads each media with its own GET on graph.instagram.com, without a batch', 
         ->and($result->posts)->toHaveCount(2)
         ->and($requests)->toHaveCount(2)
         ->and(collect($requests)->every(fn (Request $r) => $r->method() === 'GET'
-            && str_starts_with($r->url(), 'https://graph.instagram.com/v21.0/')
+            && str_starts_with($r->url(), 'https://graph.instagram.com/v25.0/')
             && $r->data() === ['metric' => 'views,reach,likes,comments,shares,saved,total_interactions', 'access_token' => 'IGAA-token']
         ))->toBeTrue()
         ->and(collect($requests)->map(fn (Request $r) => parse_url($r->url(), PHP_URL_PATH))->sort()->values()->all())
-        ->toBe(['/v21.0/'.IGL_MEDIA.'/insights', '/v21.0/'.IGL_OTHER.'/insights']);
+        ->toBe(['/v25.0/'.IGL_MEDIA.'/insights', '/v25.0/'.IGL_OTHER.'/insights']);
 
     Http::assertNotSent(fn (Request $r) => str_contains($r->url(), 'graph.facebook.com'));
 });
@@ -171,7 +171,7 @@ it('reads account metrics on graph.instagram.com', function () {
         ->and($account->following)->toBe(120)
         ->and($account->posts)->toBe(88);
 
-    Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://graph.instagram.com/v21.0/'.IGL_USER.'?')
+    Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://graph.instagram.com/v25.0/'.IGL_USER.'?')
         && $r->data() === ['fields' => 'followers_count,follows_count,media_count', 'access_token' => 'IGAA-token']);
 });
 
@@ -181,7 +181,7 @@ it('prefers meta ig_user_id over an accountId that is a database key', function 
     $result = SocialMetrics::fetchAccounts([AccountRef::make('instagram_login', 7, 'IGAA-token', meta: ['ig_user_id' => IGL_USER])]);
 
     expect($result->accountFor('instagram_login', IGL_USER)->followers)->toBe(10);
-    Http::assertSent(fn (Request $r) => parse_url($r->url(), PHP_URL_PATH) === '/v21.0/'.IGL_USER);
+    Http::assertSent(fn (Request $r) => parse_url($r->url(), PHP_URL_PATH) === '/v25.0/'.IGL_USER);
 });
 
 it('reports a missing account id as Configuration, without a request', function () {
@@ -202,4 +202,14 @@ it('uses the configured graph_version', function () {
     fetchInstagramLogin([IGL_MEDIA]);
 
     Http::assertSent(fn (Request $r) => parse_url($r->url(), PHP_URL_PATH) === '/v23.0/'.IGL_MEDIA.'/insights');
+});
+
+it('falls back to v25.0 when the app config has no instagram_login block', function () {
+    // A config published before this driver replaces the whole drivers array.
+    config(['social-metrics.drivers' => ['instagram' => ['graph_version' => 'v25.0']]]);
+    fakeInstagramLogin([IGL_MEDIA => iglMedia()]);
+
+    fetchInstagramLogin([IGL_MEDIA]);
+
+    Http::assertSent(fn (Request $r) => parse_url($r->url(), PHP_URL_PATH) === '/v25.0/'.IGL_MEDIA.'/insights');
 });

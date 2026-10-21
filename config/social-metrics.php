@@ -18,17 +18,19 @@ return [
      */
     'drivers' => [
 
+        // graph_version: Meta keeps each Graph API version about two years.
+        // v25.0 (February 2026) is available until July 29, 2028.
         'instagram' => [
-            'graph_version' => 'v21.0',
+            'graph_version' => 'v25.0',
         ],
 
         // Instagram API with Instagram Login (graph.instagram.com, no Facebook Page).
         'instagram_login' => [
-            'graph_version' => 'v21.0',
+            'graph_version' => 'v25.0',
         ],
 
         'facebook' => [
-            'graph_version' => 'v21.0',
+            'graph_version' => 'v25.0',
         ],
 
         'linkedin' => [

@@ -18,7 +18,7 @@ trait FetchesGraphInsights
     /** The Graph API version (graph.facebook.com or graph.instagram.com), overridable via driver config. */
     protected function graphVersion(MetricsContext $context): string
     {
-        return $context->config['graph_version'] ?? 'v21.0';
+        return $context->config['graph_version'] ?? 'v25.0';
     }
 
     /**
