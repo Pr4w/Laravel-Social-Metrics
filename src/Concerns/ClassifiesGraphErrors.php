@@ -46,6 +46,16 @@ trait ClassifiesGraphErrors
             if ($code === 100) {
                 return ErrorReason::Configuration;
             }
+
+            // Permission not granted or removed: #10 (API Permission Denied)
+            // and the 200-299 API Permission range. Checked after the reconnect,
+            // rate-limit and missing-object codes, none of which fall in here.
+            // A #10 message ("Object does not exist, cannot be loaded due to
+            // missing permission...") is not read as NotFound: it is just as
+            // likely a live post read with the wrong token.
+            if ($code === 10 || ($code >= 200 && $code <= 299)) {
+                return ErrorReason::Permission;
+            }
         }
 
         return parent::classifyError($status, $body);

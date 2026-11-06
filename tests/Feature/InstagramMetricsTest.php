@@ -2,6 +2,7 @@
 
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Pr4w\SocialMetrics\Enums\ErrorCategory;
 use Pr4w\SocialMetrics\Enums\ErrorReason;
 use Pr4w\SocialMetrics\Facades\SocialMetrics;
 use Pr4w\SocialMetrics\Support\AccountRef;
@@ -66,6 +67,23 @@ it('still reads account metrics on graph.facebook.com', function () {
 
     Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://graph.facebook.com/v25.0/'.IG_USER.'?'));
 });
+
+it('reports the Graph 200-299 permission range as Permission', function (int $code) {
+    Http::fake(['graph.facebook.com/*' => Http::response([[
+        'code' => 403,
+        'body' => json_encode(['error' => [
+            'message' => "(#{$code}) Requires instagram_manage_insights permission to manage the object",
+            'type' => 'OAuthException',
+            'code' => $code,
+        ]]),
+    ]])]);
+
+    $error = SocialMetrics::fetchPosts([PostRef::make('instagram', IG_MEDIA, accessToken: 'EAA-token')])->errors->sole();
+
+    expect($error->reason)->toBe(ErrorReason::Permission)
+        ->and($error->category())->toBe(ErrorCategory::Permanent)
+        ->and($error->nativeId)->toBe(IG_MEDIA);
+})->with([200, 299]);
 
 it('still reports a missing account id as Configuration for instagram', function () {
     Http::fake();

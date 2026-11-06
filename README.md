@@ -290,7 +290,9 @@ trait (Graph `code`/`error_subcode`: 190 is `needs_reconnect`; 4, 17, 32, 613 an
 80000-80014 business use case limits, such as 80002 for an Instagram account, are
 `rate_limited`; a `#100` is `not_found` only for a missing object,
 subcode 33 or "does not exist"; any other `#100`, such as a retired metric, is
-`configuration`, so the post is not dropped); YouTube reads Google `error.errors[].reason`; TikTok
+`configuration`, so the post is not dropped; `#10` and the 200-299 API Permission range
+are `permission`, even when the `#10` message says "Object does not exist", because a
+live post read with the wrong token gets the same message); YouTube reads Google `error.errors[].reason`; TikTok
 reads its string `error.code` (it returns HTTP 200 with an error body); LinkedIn maps a
 403 (`ACCESS_DENIED`) to `permission` and otherwise uses the status-based default. The base `AbstractDriver::classifyError()` is the fallback
 every driver defers to for codes it does not recognize, and it sends anything it
@@ -395,7 +397,12 @@ platform APIs.
   is deprecated"). The driver reads the composite's first attachment, and a video
   attachment sends its target id to `video_insights` (kept in `raw['video_id']`; the
   result keeps your composite as `nativeId`). That lookup costs one extra batch call per
-  50 composite ids; `facebook_content` = `post`/`reel` skips it. Comments and shares are
+  50 composite ids; `facebook_content` = `post` skips it. If the lookup is throttled, hits
+  a 5xx or needs a reconnect, that error is reported. Any other lookup error (Graph
+  answers a deleted post with a vague `#10` there) is not: the id is read as a feed post
+  and the `/insights` call decides, so a deleted post comes back as `not_found` (subcode
+  33) and a real permission gap as `permission`. A post forced to `reel` has no such
+  fallback and reports the lookup error. Comments and shares are
   not exposed as discrete counts on either endpoint, so they stay null; reels keep plays,
   replays, watch time and social_actions in raw.
 - **X (Twitter)** (platform `twitter`) reads `GET /2/tweets?ids=…&tweet.fields=public_metrics`,

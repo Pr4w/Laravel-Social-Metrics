@@ -3,8 +3,10 @@
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Pr4w\SocialMetrics\Data\MetricsResult;
+use Pr4w\SocialMetrics\Enums\ErrorCategory;
 use Pr4w\SocialMetrics\Enums\ErrorReason;
 use Pr4w\SocialMetrics\Facades\SocialMetrics;
+use Pr4w\SocialMetrics\Support\AccountRef;
 use Pr4w\SocialMetrics\Support\PostRef;
 
 const FB_POST_ID = '1000_2000';
@@ -171,6 +173,56 @@ it('reports a deleted post as NotFound', function (array $graphError) {
     'subcode 33' => [fbError(100, "Unsupported get request. Object with ID '1000_2000' does not exist", 33)],
     'message only' => [fbError(100, "Object with ID '1000_2000' does not exist")],
 ]);
+
+/** The vague error Graph gives the attachments lookup for a deleted post or a wrong token. */
+function fbPermissionDenied(): array
+{
+    return fbError(10, '(#10) Object does not exist, cannot be loaded due to missing permission or reviewable feature, or does not support this operation.');
+}
+
+it('lets insights answer when the type lookup is refused with #10', function (array $insightsError, ErrorReason $reason) {
+    fakeGraph(fn (string $url) => str_contains($url, '?fields=')
+        ? [400, fbPermissionDenied()]
+        : [400, $insightsError]);
+
+    $error = fetchFacebook([FB_POST_ID])->errors->sole();
+
+    expect($error->reason)->toBe($reason)
+        ->and($error->category())->toBe(ErrorCategory::Permanent)
+        ->and($error->nativeId)->toBe(FB_POST_ID)
+        ->and(graphRequests())->toContain(FB_POST_ID . '/insights?metric=post_media_view,post_total_media_view_unique,post_reactions_by_type_total');
+})->with([
+    'deleted post' => [fbError(100, "Unsupported get request. Object with ID '1000_2000' does not exist, cannot be loaded due to missing permissions, or does not support this operation.", 33), ErrorReason::NotFound],
+    'missing permission' => [fbPermissionDenied(), ErrorReason::Permission],
+]);
+
+it('still reports lookup errors that insights would not answer, without calling insights', function (int $status, array $graphError, array $meta, ErrorReason $reason) {
+    fakeGraph(fn (string $url) => str_contains($url, '?fields=')
+        ? [$status, $graphError]
+        : [200, fbInsights(['post_media_view' => 1])]);
+
+    $error = fetchFacebook([FB_POST_ID], $meta)->errors->sole();
+
+    expect($error->reason)->toBe($reason)
+        ->and($error->nativeId)->toBe(FB_POST_ID)
+        ->and(implode(' ', graphRequests()))->not->toContain('insights');
+})->with([
+    'rate limit #4' => [403, fbError(4, 'Application request limit reached'), [], ErrorReason::RateLimited],
+    'rate limit #613' => [403, fbError(613, 'Calls to this api have exceeded the rate limit.'), [], ErrorReason::RateLimited],
+    'server error' => [500, fbError(2, 'An unexpected error has occurred. Please retry your request later.'), [], ErrorReason::HttpError],
+    'expired token #190' => [400, fbError(190, 'Error validating access token: Session has expired.'), [], ErrorReason::NeedsReconnect],
+    'forced reel #10' => [400, fbPermissionDenied(), ['facebook_content' => 'reel'], ErrorReason::Permission],
+]);
+
+it('reports a #10 on account metrics as Permission', function () {
+    Http::fake(['graph.facebook.com/*' => Http::response(fbError(10, "(#10) This endpoint requires the 'pages_read_engagement' permission."), 400)]);
+
+    $error = SocialMetrics::fetchAccounts([AccountRef::make('facebook', '1000', 'token')])->errors->sole();
+
+    expect($error->reason)->toBe(ErrorReason::Permission)
+        ->and($error->category())->toBe(ErrorCategory::Permanent)
+        ->and($error->httpStatus)->toBe(400);
+});
 
 it('still rejects a forced post on a bare id', function () {
     fakeGraph(fn (string $url) => [400, fbError(100, 'Unexpected request')]);

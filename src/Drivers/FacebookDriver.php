@@ -81,7 +81,8 @@ class FacebookDriver extends AbstractDriver
      * Decide where each id's insights live. Returns nativeId => video id for
      * reels and videos (read from video_insights), or null for feed posts (read
      * from insights). Ids that cannot be resolved are recorded as errors and
-     * left out.
+     * left out, except a lookup refused for a reason insights can answer (see
+     * lookupErrorStands()), which is read as a feed post.
      *
      * @return array<string, string|null>
      */
@@ -108,6 +109,10 @@ class FacebookDriver extends AbstractDriver
             }
         }
 
+        // Lookup failures land on a scratch result first, so the ones insights
+        // can answer are not reported.
+        $lookupResult = new DriverResult;
+
         $this->graphBatchEach($version, $context->accessToken, $lookups, function (string $id, array $body) use (&$targets, $forced, $result) {
             $attachment = $body['attachments']['data'][0] ?? [];
             $videoId = $attachment['target']['id'] ?? null;
@@ -122,9 +127,34 @@ class FacebookDriver extends AbstractDriver
             } else {
                 $targets[$id] = null;
             }
-        }, $result);
+        }, $lookupResult);
+
+        foreach ($lookupResult->errors as $error) {
+            if ($this->lookupErrorStands($error, $forced)) {
+                $result->addError($error);
+            } else {
+                $targets[$error->nativeId] = null;
+            }
+        }
 
         return $targets;
+    }
+
+    /**
+     * Whether a failed type lookup is reported as is. Throttling, transport,
+     * 5xx and reconnect errors are: insights would fail the same way. Anything
+     * else (typically a vague "#10 Object does not exist, cannot be loaded due
+     * to missing permission") is not, and the id is read as a feed post so the
+     * /insights error or data is the answer: a deleted post comes back as
+     * subcode 33 there. A forced reel has no feed-post fallback, and a
+     * whole-batch failure has no id to fall back on.
+     */
+    private function lookupErrorStands(MetricsError $error, ?string $forced): bool
+    {
+        return $forced === 'reel'
+            || $error->nativeId === null
+            || $error->retryable()
+            || $error->reason === ErrorReason::NeedsReconnect;
     }
 
     /**
