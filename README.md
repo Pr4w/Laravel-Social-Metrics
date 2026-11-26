@@ -440,7 +440,9 @@ platform APIs.
   business accounts only) is `permission`, a deleted Pin `not_found`; after a 401 or a
   429 the remaining Pins are not requested and get the same error. The account is a
   board (Pins are published to boards): `GET /boards/{id}` gives its followers and
-  Pins. Pinterest's Sandbox has no analytics; `drivers.pinterest.api_url`, or
+  Pins. Pinterest's board counter can fall below zero once Pins leave the board; such
+  a count is null (unknown), and raw keeps the number Pinterest sent. Pinterest's
+  Sandbox has no analytics; `drivers.pinterest.api_url`, or
   `meta['api_url']` per call, points the driver at another host.
 - **TikTok** cannot query by id, so it pages the account listing and filters. Raise
   `drivers.tiktok.max_videos` if you request ids older than the window.

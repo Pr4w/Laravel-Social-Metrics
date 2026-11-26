@@ -110,6 +110,19 @@ it('reads the board given in meta when accountId is the caller\'s own label', fu
     expect($result->accounts->sole()->followers)->toBe(2);
 });
 
+it('keeps a board count below zero unknown, and a zero a zero', function () {
+    // Pinterest's answer for a board emptied of its 6 Pins
+    Http::fake(['api.pinterest.com/v5/boards/'.PIN_BOARD => Http::response([
+        'id' => PIN_BOARD, 'privacy' => 'PROTECTED', 'follower_count' => 0, 'pin_count' => -13,
+    ])]);
+
+    $account = SocialMetrics::fetchAccounts([AccountRef::make('pinterest', PIN_BOARD, 'pina-1')])->accountFor('pinterest', PIN_BOARD);
+
+    expect($account->posts)->toBeNull()
+        ->and($account->followers)->toBe(0)
+        ->and($account->raw['pin_count'])->toBe(-13);
+});
+
 it('calls the host in meta, then the configured one', function () {
     config(['social-metrics.drivers.pinterest.api_url' => 'https://api-sandbox.pinterest.com/v5']);
     Http::fake(['*' => Http::response(['id' => PIN_BOARD, 'follower_count' => 0, 'pin_count' => 3])]);

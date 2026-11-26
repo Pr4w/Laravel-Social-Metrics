@@ -25,7 +25,8 @@ use Pr4w\SocialMetrics\Support\MetricsContext;
  * stay in raw; shares and reach are null. A 401 or a 429 fails every Pin the
  * same way, so the remaining ones are not requested.
  *
- * Account: GET /boards/{id}, the board's followers and Pins.
+ * Account: GET /boards/{id}, the board's followers and Pins. A count below zero
+ * is null: Pinterest's board counter can fall under zero once Pins leave it.
  *
  * The analytics are not available in Pinterest's Sandbox (where an app with
  * Trial access works). drivers.pinterest.api_url, or meta['api_url'] per call,
@@ -118,11 +119,24 @@ class PinterestDriver extends AbstractDriver
         return $result->setAccount(new AccountMetrics(
             platform: 'pinterest',
             accountId: (string) ($data['id'] ?? $board),
-            followers: $this->int($data, 'follower_count'),
-            posts: $this->int($data, 'pin_count'),
+            followers: $this->boardCount($data, 'follower_count'),
+            posts: $this->boardCount($data, 'pin_count'),
             raw: array_intersect_key($data, array_flip(['id', 'name', 'privacy', 'follower_count', 'pin_count', 'collaborator_count'])),
             fetchedAt: now()->toImmutable(),
         ));
+    }
+
+    /**
+     * A board counter, null when Pinterest's is below zero. When Pins leave a
+     * board, Pinterest can take off more than it held (6 Pins once became -13,
+     * on a board then empty), and the counter keeps that offset as Pins come
+     * back: the real number is unknown, not zero. raw keeps what was sent.
+     */
+    private function boardCount(array $data, string $key): ?int
+    {
+        $count = $this->int($data, $key);
+
+        return $count !== null && $count < 0 ? null : $count;
     }
 
     /**
